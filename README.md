@@ -133,6 +133,11 @@ Flags on `dct-chat`, or environment variables:
 - **"dbt parse failed".** The panel shows dbt's own message. Usually a profile name or target that doesn't match.
 - **A board shows an error.** Open **Details**, or just tell Claude what you see.
 
+## Where this could go
+
+Notes on rebuilding the idea as a Microsoft Fabric app (Rayfin), with Claude reached through Microsoft Foundry:
+[`docs/fabric-and-rayfin.md`](docs/fabric-and-rayfin.md). Exploration only, nothing built yet.
+
 ## Credits
 
 The sample data comes from the [dbt charts](https://github.com/dbt-labs/dbt-charts) playground and is used under

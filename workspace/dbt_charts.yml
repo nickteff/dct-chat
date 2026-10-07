@@ -1,0 +1,4 @@
+sources:
+  examples_db:
+    type: duckdb
+    path: data/examples.duckdb

@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dct chat</title>
+<style>
+  :root {
+    --bg: #fafaf9; --panel: #ffffff; --ink: #1c1917; --muted: #78716c;
+    --line: #e7e5e4; --accent: #c2410c; --accent-ink: #ffffff;
+    --user: #f0efed; --chip: #f5f5f4; --skel: #ecebea; --skel-hi: #f6f5f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151413; --panel: #1c1b1a; --ink: #f5f5f4; --muted: #a8a29e;
+      --line: #2e2c2a; --accent: #ea7a47; --accent-ink: #1c1917;
+      --user: #262422; --chip: #262422; --skel: #262422; --skel-hi: #2f2d2b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .app { display: flex; height: 100%; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  header.top { padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header.top strong { font-size: 15px; letter-spacing: -0.01em; }
+  header.top .right { display: flex; gap: 14px; align-items: center; }
+  header.top select { font: inherit; font-size: 12px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+  header.top button { all: unset; cursor: pointer; color: var(--muted); font-size: 13px; }
+  header.top button:hover { color: var(--ink); }
+
+  /* one centered column; boards live inside it */
+  #log { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
+  .stream { max-width: 920px; margin: 0 auto; padding: 24px 20px 12px; display: flex; flex-direction: column; gap: 16px; min-height: 100%; }
+  .msg { white-space: pre-wrap; word-wrap: break-word; animation: rise .18s ease-out; max-width: 80ch; }
+  .msg.user { align-self: flex-end; background: var(--user); padding: 8px 14px; border-radius: 16px 16px 4px 16px; max-width: 75%; }
+  .msg.bot { align-self: flex-start; }
+  .msg.bot code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+  .msg.err { color: #b91c1c; font-size: 13px; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .empty { margin: auto; text-align: center; display: flex; flex-direction: column; gap: 8px; max-width: 520px; padding: 24px 0; }
+  .empty h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.02em; }
+  .empty p { margin: 0 0 12px; color: var(--muted); }
+  .suggest { all: unset; cursor: pointer; text-align: left; padding: 11px 14px; border: 1px solid var(--line); border-radius: 12px; font-size: 14px; background: var(--panel); }
+  .suggest:hover { border-color: var(--accent); }
+
+  /* a board, inline in the conversation */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; animation: rise .25s ease-out; }
+  .card .bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .card .bar .name { color: var(--ink); font-weight: 600; }
+  .card .bar .spacer { flex: 1; }
+  .card .bar a, .card .bar button { all: unset; cursor: pointer; color: var(--muted); }
+  .card .bar a:hover, .card .bar button:hover { color: var(--ink); }
+  .card .body { position: relative; background: #fff; }
+  .card iframe { display: block; width: 100%; height: 360px; border: 0; background: #fff; transition: height .2s ease; }
+  .card.loading .body { height: 200px; }
+  .card.loading iframe { visibility: hidden; position: absolute; inset: 0; }
+
+  /* while building: a skeleton dashboard with a step tracker, replaced by the board */
+  .building .body { height: 380px; background: var(--panel); padding: 18px; display: grid; place-items: center; }
+  .skeleton { position: absolute; inset: 18px; display: grid; gap: 12px; grid-template-columns: repeat(6, 1fr); grid-template-rows: 64px 1fr 1fr; }
+  .skeleton div { border-radius: 10px; background: linear-gradient(90deg, var(--skel) 25%, var(--skel-hi) 50%, var(--skel) 75%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+  .skeleton .k { grid-column: span 2; } .skeleton .wide { grid-column: span 6; } .skeleton .half { grid-column: span 3; }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .tracker { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; min-width: 280px; box-shadow: 0 10px 40px rgba(0,0,0,.12); }
+  .tracker h3 { margin: 0 0 10px; font-size: 14px; }
+  .step { display: flex; align-items: center; gap: 12px; padding: 5px 0; color: var(--muted); font-size: 14px; }
+  .step .mark { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; font-size: 10px; flex: none; }
+  .step.active { color: var(--ink); font-weight: 600; }
+  .step.active .mark { border-color: var(--accent); border-top-color: transparent; animation: spin .9s linear infinite; }
+  .step.done { color: var(--ink); }
+  .step.done .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .step.done .mark::after { content: "✓"; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  form { padding: 12px 20px 18px; }
+  .composer { max-width: 920px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 8px; }
+  .composer:focus-within { border-color: var(--accent); }
+  textarea { flex: 1; resize: none; max-height: 140px; padding: 8px 10px; border: 0; background: transparent; color: var(--ink); font: inherit; outline: none; }
+  form button { border: 0; background: var(--accent); color: var(--accent-ink); padding: 9px 16px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+  form button:disabled { opacity: .5; cursor: default; }
+
+  /* card actions */
+  .card .bar .act { all: unset; cursor: pointer; color: var(--muted); font-size: 13px; padding: 2px 6px; border-radius: 6px; }
+  .card .bar .act:hover, .card .bar .act.on { color: var(--ink); background: var(--chip); }
+  .card .bar .act.on { color: var(--accent); }
+  .menuwrap { position: relative; }
+  .menu { position: absolute; right: 0; top: 100%; margin-top: 4px; z-index: 5; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 4px; min-width: 130px; box-shadow: 0 8px 28px rgba(0,0,0,.14); }
+  .menu a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 13px; }
+  .menu a:hover { background: var(--chip); }
+
+  .pickbox { position: absolute; pointer-events: none; border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 6px; z-index: 4; transition: all .08s; }
+  .pickhint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 5; background: var(--ink); color: var(--bg); font-size: 12px; padding: 4px 10px; border-radius: 999px; pointer-events: none; }
+
+  dialog.modal { border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 760px); background: var(--panel); color: var(--ink); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+  dialog.modal::backdrop { background: rgba(20, 18, 16, .55); backdrop-filter: blur(2px); }
+  dialog.modal[open] { display: flex; flex-direction: column; animation: rise .18s ease-out; }
+  .modal header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+  .modal header h3 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
+  .modal header .sub { color: var(--muted); font-size: 13px; flex: 1; }
+  .modal header button { all: unset; cursor: pointer; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); }
+  .modal header button:hover { background: var(--chip); color: var(--ink); }
+  .modal .content { padding: 16px 20px 20px; overflow-y: auto; font-size: 14px; }
+  .modal .meta { color: var(--muted); margin-bottom: 12px; }
+  .modal details { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
+  .modal summary { cursor: pointer; padding: 10px 14px; list-style: none; display: flex; gap: 10px; align-items: baseline; }
+  .modal summary::-webkit-details-marker { display: none; }
+  .modal summary::before { content: "▸"; color: var(--muted); font-size: 11px; }
+  .modal details[open] summary::before { content: "▾"; }
+  .modal summary .n { color: var(--muted); font-size: 13px; }
+  .modal pre { margin: 0; padding: 12px 14px; background: var(--chip); border-top: 1px solid var(--line); border-radius: 0 0 10px 10px; overflow-x: auto; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  .modal .warn { color: #b45309; margin-top: 8px; }
+
+  .followups { display: flex; flex-wrap: wrap; gap: 8px; animation: rise .25s ease-out; }
+  .followups button { all: unset; cursor: pointer; font-size: 13px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+  .followups button:hover { border-color: var(--accent); color: var(--accent); }
+
+  .ctx { display: flex; align-items: center; gap: 8px; max-width: 920px; margin: 0 auto 8px; font-size: 13px; color: var(--muted); }
+  .ctx .chip { display: inline-flex; align-items: center; gap: 6px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); color: var(--ink); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 999px; padding: 3px 4px 3px 12px; }
+  .ctx .chip button { all: unset; cursor: pointer; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); }
+  .ctx .chip button:hover { background: var(--chip); color: var(--ink); }
+  .msg.user small { display: block; opacity: .65; font-size: 12px; margin-bottom: 2px; }
+
+  .toast { position: fixed; left: 50%; bottom: 140px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 999px; font-size: 13px; z-index: 20; animation: rise .2s ease-out; }
+  header.top .boards { position: relative; }
+  header.top .boards .menu { right: 0; max-height: 320px; overflow-y: auto; min-width: 200px; }
+  header.top .boards .menu a { cursor: pointer; }
+  form button.stop { background: var(--ink); color: var(--bg); }
+
+  /* boards sidebar */
+  #side { width: 272px; flex: none; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); transition: margin-left .2s ease, opacity .2s; }
+  .app.closed #side { margin-left: -272px; opacity: 0; pointer-events: none; }
+  #side .head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; }
+  #side .head h2 { margin: 0; font-size: 13px; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  #side .head button, header.top .brand button { all: unset; cursor: pointer; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); }
+  #side .head button:hover, header.top .brand button:hover { background: var(--chip); color: var(--ink); }
+  #boardList { flex: 1; overflow-y: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .bitem { all: unset; box-sizing: border-box; cursor: pointer; display: flex; gap: 12px; align-items: center; padding: 8px; border-radius: 10px; width: 100%; }
+  .bitem:hover { background: var(--chip); }
+  .bitem.flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { 0% { background: color-mix(in srgb, var(--accent) 25%, transparent); } 100% { background: transparent; } }
+  .bitem .thumb { position: relative; width: 76px; height: 52px; flex: none; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: linear-gradient(90deg, var(--skel) 25%, var(--skel-hi) 50%, var(--skel) 75%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+  .bitem .thumb.ready { animation: none; background: #fff; }
+  .bitem .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+  .bitem .txt { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+  .bitem .t { font-size: 14px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .bitem .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bitem .dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+  .adopt { margin: 4px 8px 8px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; font-size: 13px; color: var(--muted); }
+  .adopt button { all: unset; cursor: pointer; color: var(--accent); font-weight: 600; margin-top: 4px; display: block; }
+  .side-empty { padding: 8px 16px; color: var(--muted); font-size: 13px; }
+  header.top .brand { display: flex; align-items: center; gap: 6px; }
+  @media (max-width: 900px) { #side { position: fixed; z-index: 30; inset: 0 auto 0 0; box-shadow: 0 0 40px rgba(0,0,0,.3); } }
+
+  .pill { all: unset; cursor: pointer; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #16a34a; flex: none; }
+  .pill.demo::before { background: var(--muted); }
+  .pill.bad { color: #b91c1c; border-color: #fca5a5; }
+  .pill.bad::before { background: #dc2626; }
+  .pill:hover { border-color: var(--accent); color: var(--ink); }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; margin: 4px 0 14px; font-size: 14px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 10px; }
+  .actions button { cursor: pointer; font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .actions button:hover { border-color: var(--accent); }
+  .actions button:disabled { opacity: .55; cursor: default; }
+  .result { font-size: 13px; padding: 10px 12px; border-radius: 10px; background: var(--chip); white-space: pre-wrap; }
+  .result.ok { background: color-mix(in srgb, #16a34a 14%, var(--panel)); }
+  .result.err { background: color-mix(in srgb, #dc2626 12%, var(--panel)); color: #991b1b; }
+  .modal code, .empty code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--chip); padding: 2px 6px; border-radius: 5px; }
+  .empty .problem { color: #b91c1c; font-size: 14px; background: color-mix(in srgb, #dc2626 8%, var(--panel)); border: 1px solid #fca5a5; border-radius: 12px; padding: 12px 14px; text-align: left; white-space: pre-wrap; }
+  .hidden { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+<aside id="side" aria-label="Boards">
+  <div class="head"><h2>Boards <span id="boardCount"></span></h2><button id="sideClose" title="Hide sidebar" aria-label="Hide sidebar">‹</button></div>
+  <div id="boardList"></div>
+</aside>
+<div class="main">
+<header class="top">
+  <span class="brand"><button id="sideToggle" title="Boards" aria-label="Toggle boards sidebar">☰</button><strong>dct chat</strong></span>
+  <span class="right">
+    <button id="projectPill" class="pill" title="Data connection"></button>
+    <select id="model" aria-label="Model" title="Changing the model starts a new chat"></select>
+    <button id="reset" title="Start a new conversation">New chat</button>
+  </span>
+</header>
+
+<div id="log">
+  <div class="stream" id="stream">
+    <div class="empty" id="empty">
+      <h1>What should we build?</h1>
+      <p>Describe a dashboard in plain words. It builds on the example sales data and appears right here.</p>
+      <button class="suggest">Monthly revenue trend, with revenue by category and a region filter</button>
+      <button class="suggest">A KPI row for revenue and units, plus a table of the top products</button>
+      <button class="suggest">Compare revenue by region as a bar chart and a small-multiples line</button>
+    </div>
+  </div>
+</div>
+
+<form id="form">
+  <div class="ctx hidden" id="ctx"><span class="chip"><span id="ctxText"></span><button type="button" id="ctxClear" title="Clear" aria-label="Clear">✕</button></span></div>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Ask for a dashboard, or a change to the last one…" autofocus></textarea>
+    <button id="send" type="submit">Send</button>
+  </div>
+</form>
+
+</div>
+</div>
+
+<dialog class="modal" id="detailsModal" aria-label="How this was built">
+  <header><h3>How this was built</h3><span class="sub"></span><button id="detailsClose" aria-label="Close" title="Close (Esc)">✕</button></header>
+  <div class="content"></div>
+</dialog>
+<dialog class="modal" id="projectModal" aria-label="Data connection">
+  <header><h3>Data connection</h3><span class="sub" id="projectSub"></span><button id="projectClose" aria-label="Close" title="Close (Esc)">✕</button></header>
+  <div class="content" id="projectBody"></div>
+</dialog>
+<div class="toast hidden" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log"), stream = $("stream"), input = $("input"), send = $("send");
+
+// Stages the server reports, in the order a build normally moves through them.
+const STEPS = ["Understanding your request", "Exploring your data", "Designing the board", "Checking the result"];
+const PHASE_STEP = { learn: 1, explore: 1, write: 2, check: 3 };
+
+let busy = false;
+let BASE = "";   // this session's URL prefix for its boards, set by the server
+
+function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function render(text) {
+  return esc(text).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+}
+function scroll() { log.scrollTop = log.scrollHeight; }
+
+// Everything new goes above the progress card while one is on screen.
+let progressEl = null;
+function put(el) {
+  $("empty")?.remove();
+  if (progressEl) stream.insertBefore(el, progressEl); else stream.appendChild(el);
+  scroll();
+  return el;
+}
+function addMsg(cls, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.textContent = text;
+  return put(d);
+}
+
+/* ---- progress card ---- */
+function startProgress() {
+  progressEl = document.createElement("div");
+  progressEl.className = "card building";
+  progressEl.setAttribute("role", "status");
+  progressEl.innerHTML = `
+    <div class="body">
+      <div class="skeleton" aria-hidden="true">
+        <div class="k"></div><div class="k"></div><div class="k"></div><div class="wide"></div><div class="half"></div><div class="half"></div>
+      </div>
+      <div class="tracker"><h3>Building your dashboard</h3><div class="steps"></div></div>
+    </div>`;
+  stream.appendChild(progressEl);
+  setStep(0); scroll();
+}
+function setStep(n) {
+  progressEl.querySelector(".steps").innerHTML = STEPS.map((label, i) =>
+    `<div class="step ${i < n ? "done" : i === n ? "active" : ""}"><span class="mark"></span>${label}</div>`).join("");
+}
+
+/* ---- helpers ---- */
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.remove("hidden");
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add("hidden"), 2600);
+}
+document.addEventListener("click", (e) => { if (!e.target.closest(".menuwrap, .boards")) document.querySelectorAll(".menu").forEach((m) => m.classList.add("hidden")); });
+
+/* ---- context: a chart the user pointed at ---- */
+let ctx = null;   // { slug, chart, card }
+function setContext(next) {
+  if (ctx?.card) ctx.card.querySelector(".pickbox")?.remove();
+  ctx = next;
+  $("ctx").classList.toggle("hidden", !ctx);
+  if (ctx) $("ctxText").textContent = `Editing “${ctx.chart.replace(/_/g, " ")}” in ${ctx.slug.replace(/[-_/]+/g, " ")}`;
+  input.focus();
+}
+$("ctxClear").addEventListener("click", () => setContext(null));
+
+/* ---- "How this was built" modal ---- */
+async function openDetails(slug, key) {
+  const dlg = $("detailsModal"), content = dlg.querySelector(".content");
+  dlg.querySelector(".sub").textContent = slug.replace(/[-_/]+/g, " ");
+  content.innerHTML = '<div class="meta">Loading…</div>';
+  if (!dlg.open) dlg.showModal();
+  try {
+    const d = await (await fetch(`/api/info/${slug}${key}`)).json();
+    if (d.error) { content.innerHTML = `<div class="warn">${esc(d.error)}</div>`; return; }
+    const when = new Date(d.ran_at).toLocaleTimeString();
+    content.innerHTML =
+      `<div class="meta">${d.queries.length} ${d.queries.length === 1 ? "query" : "queries"} ran against your data at ${when}${key ? ", with your current filters applied" : ""}. Open one to see its SQL.</div>` +
+      d.queries.map((q) => `<details><summary><b>${esc(q.name)}</b><span class="n">${q.rows} ${q.rows === 1 ? "row" : "rows"}${q.columns.length ? " · " + esc(q.columns.join(", ")) : ""}</span></summary><pre>${esc((q.sql || "(not a SQL query)").trim())}</pre></details>`).join("") +
+      (d.warnings.length ? `<div class="warn">${d.warnings.length} warning(s) on this board</div>` : "");
+  } catch (e) { content.innerHTML = `<div class="warn">${esc(String(e))}</div>`; }
+}
+$("detailsModal").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });  // click on the backdrop
+$("detailsClose").addEventListener("click", () => $("detailsModal").close());
+
+/* ---- a finished board as an inline card ---- */
+function boardCard(slug) {
+  // A rebuilt board replaces its earlier card: that card is live and would now show the new version.
+  stream.querySelectorAll(`.card[data-slug="${slug}"]`).forEach((c) => c.remove());
+  if (ctx?.slug === slug) setContext(null);
+  const card = document.createElement("div");
+  card.className = "card loading";
+  card.dataset.slug = slug;
+  card.innerHTML = `
+    <div class="bar"><span class="name"></span><span class="spacer"></span>
+      <button class="act pick" title="Click a chart to ask for a change to it">Select chart</button>
+      <button class="act det" title="Show the SQL and data behind this board">Details</button>
+      <span class="menuwrap"><button class="act exp">Export ▾</button>
+        <div class="menu hidden">
+          <a data-fmt="png">PNG image</a><a data-fmt="pdf">PDF</a><a data-fmt="html">HTML page</a><a data-fmt="svg">SVG</a>
+        </div></span>
+      <button class="act share" title="Copy a link to this board with the current filters">Share</button>
+      <button class="act reload" title="Reload">Reload</button>
+      <a class="act" target="_blank" rel="noopener" title="Open full size">Open ↗</a></div>
+    <div class="body"><iframe title="Board"></iframe></div>`;
+  card.querySelector(".name").textContent = slug.replace(/[-_/]+/g, " ");
+  const url = `${BASE}/${slug}/`;
+  const frame = card.querySelector("iframe"), body = card.querySelector(".body");
+  const search = () => { try { return new URL(frame.src).search; } catch { return ""; } };
+  card.querySelector("a.act").href = url;
+  card.querySelector(".reload").addEventListener("click", () => frame.contentWindow.location.reload());
+
+  /* export + share use the filters currently applied */
+  const menu = card.querySelector(".menu");
+  card.querySelector(".exp").addEventListener("click", (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); });
+  menu.querySelectorAll("a").forEach((a) => a.addEventListener("click", () => {
+    a.href = `/api/export/${a.dataset.fmt}/${slug}${search()}`; a.download = ""; menu.classList.add("hidden");
+    toast(`Preparing ${a.textContent}…`);
+  }));
+  card.querySelector(".share").addEventListener("click", async () => {
+    const link = `${location.origin}${BASE}/${slug}/${search()}`;
+    try { await navigator.clipboard.writeText(link); toast("Link copied. It only opens for people who can reach this machine."); }
+    catch { toast(link); }
+  });
+
+  /* details: where the numbers come from, in a modal over the page */
+  card.querySelector(".det").addEventListener("click", () => openDetails(slug, search()));
+
+  /* edit by pointing: pick a chart, and the next message is about it */
+  const pickBtn = card.querySelector(".pick");
+  let picking = false, box = null, hint = null;
+  const stopPicking = () => {
+    picking = false; pickBtn.classList.remove("on"); hint?.remove(); hint = null;
+    if (!(ctx && ctx.card === card)) box?.remove();
+    frame.contentDocument?.documentElement.classList.remove("dct-pick");
+  };
+  pickBtn.addEventListener("click", () => {
+    if (picking) return stopPicking();
+    picking = true; pickBtn.classList.add("on");
+    frame.contentDocument?.documentElement.classList.add("dct-pick");
+    hint = document.createElement("div"); hint.className = "pickhint"; hint.textContent = "Click a chart";
+    body.appendChild(hint);
+  });
+  function wirePicking(doc) {
+    const chartAt = (t) => t.closest?.('[data-authored-kind="chart"]');
+    doc.addEventListener("mouseover", (e) => {
+      if (!picking) return;
+      const el = chartAt(e.target); if (!el) return;
+      const r = el.getBoundingClientRect();
+      box ||= Object.assign(document.createElement("div"), { className: "pickbox" });
+      body.appendChild(box);
+      Object.assign(box.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    });
+    doc.addEventListener("click", (e) => {
+      if (!picking) return;
+      const el = chartAt(e.target); if (!el) return;
+      e.preventDefault(); e.stopPropagation();
+      const chart = el.getAttribute("data-authored-path").replace(/^charts\./, "");
+      picking = false; pickBtn.classList.remove("on"); hint?.remove(); hint = null;
+      doc.documentElement.classList.remove("dct-pick");
+      setContext({ slug, chart, card });
+      box ||= Object.assign(document.createElement("div"), { className: "pickbox" });
+      card.querySelector(".body").appendChild(box);
+      ctx.card = card;
+    }, true);
+  }
+
+  frame.addEventListener("load", () => {
+    card.classList.remove("loading");
+    // Same origin (the app proxies boards), so the card can size itself to the board.
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    // The card has its own title bar; the board's navigation bar would duplicate it.
+    const hide = doc.createElement("style");
+    hide.textContent = ".dbt-nav { display: none !important; } .dct-pick, .dct-pick * { cursor: crosshair !important; }";
+    doc.head.appendChild(hide);
+    wirePicking(doc);
+    const fit = () => { frame.style.height = Math.max(240, doc.documentElement.scrollHeight) + "px"; };
+    fit();
+    new ResizeObserver(fit).observe(doc.documentElement);
+    // Land on the top of the new board, not the bottom of a tall one.
+    if (!card.dataset.seen) { card.dataset.seen = "1"; setTimeout(() => card.scrollIntoView({ behavior: "smooth", block: "start" }), 60); }
+  });
+  frame.src = url;
+  setTimeout(markOpenBoards, 0);
+  return card;
+}
+
+/* ---- embedded boards ask their host to apply filters and follow links ---- */
+// A board inside an iframe doesn't reload itself: it posts its new variable values
+// to the parent and waits. Reloading the card with those values as query params is
+// exactly what a standalone board would have done.
+window.addEventListener("message", (e) => {
+  const frame = [...document.querySelectorAll(".card iframe")].find((f) => f.contentWindow === e.source);
+  const msg = e.data;
+  if (!frame || !msg || typeof msg !== "object") return;
+  if (msg.type === "dbt-variable-change") {
+    const url = new URL(frame.src);
+    url.search = "";
+    for (const [name, value] of Object.entries(msg.variables || {})) {
+      if (Array.isArray(value)) value.forEach((v) => url.searchParams.append(name, String(v)));
+      else if (value !== null && value !== undefined && value !== "") url.searchParams.set(name, String(value));
+    }
+    frame.src = url.toString();
+  } else if (msg.type === "dbt-board-navigate" && typeof msg.href === "string" && msg.href.startsWith("/")) {
+    frame.src = msg.href;
+  }
+});
+
+/* ---- one chat turn ---- */
+let stopped = false;
+function setBusy(on) {
+  busy = on;
+  send.textContent = on ? "Stop" : "Send";
+  send.type = on ? "button" : "submit";
+  send.classList.toggle("stop", on);
+}
+send.addEventListener("click", () => { if (busy) { stopped = true; fetch("/api/stop", { method: "POST" }); } });
+
+async function turn(message) {
+  if (busy || !message.trim()) return;
+  setBusy(true); stopped = false;
+  document.querySelector(".followups")?.remove();
+  const about = ctx;
+  const bubble = addMsg("user", message);
+  if (about) { const t = document.createElement("small"); t.textContent = `about “${about.chart.replace(/_/g, " ")}”`; bubble.prepend(t); }
+  const sent = about ? `[Context: board ${about.slug}, chart ${about.chart}] ${message}` : message;
+  setContext(null);
+  startProgress();
+  let live = null, built = [], wrote = false, ideas = [];
+  // Text the agent writes before a tool call is narration, not the answer: drop it, keep what follows the last call.
+  let pending = null, lastNarration = "";
+  try {
+    const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: sent }) });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+        const ev = /event: (\w+)/.exec(raw)?.[1], data = JSON.parse(/data: (.*)/.exec(raw)?.[1] || "{}");
+        if (ev === "phase") {
+          if (pending) { lastNarration = pending.textContent; pending.remove(); pending = null; }
+          live = null;
+          if (data.phase === "write") wrote = true;
+          // Running a query or reading before the first write is still exploring.
+          const n = data.phase === "check" && !wrote ? 1 : PHASE_STEP[data.phase];
+          if (n !== undefined) setStep(n);
+        } else if (ev === "delta") {
+          if (!live) { live = addMsg("bot", ""); live.raw = ""; pending = live; }
+          live.raw += data.text;
+          // The trailing NEXT: line is for the follow-up chips, not for reading.
+          live.textContent = live.raw.replace(/\n?\s*NEXT:[\s\S]*$/i, ""); scroll();
+        } else if (ev === "text") {
+          if (live) { live.innerHTML = render(data.text); live = null; }
+          else { pending = addMsg("bot", ""); pending.innerHTML = render(data.text); }
+        } else if (ev === "suggest") {
+          ideas = data.ideas;
+        } else if (ev === "board") {
+          built.push(data.slug);
+        } else if (ev === "error") {
+          addMsg("err", data.message);
+        }
+      }
+    }
+  } catch (e) { addMsg("err", String(e)); }
+  if (!pending && lastNarration && !stopped && !built.length) addMsg("bot", lastNarration);
+  if (stopped) addMsg("bot", "Stopped.");
+  // The progress card gives way to the finished board, in the same spot.
+  built.forEach((slug) => stream.insertBefore(boardCard(slug), progressEl));
+  progressEl.remove(); progressEl = null;
+  if (ideas.length && !stopped) {
+    const f = document.createElement("div"); f.className = "followups";
+    ideas.forEach((idea) => { const b = document.createElement("button"); b.textContent = idea; b.addEventListener("click", () => turn(idea)); f.appendChild(b); });
+    stream.appendChild(f);
+  }
+  if (!built.length) scroll(); else loadSidebar();
+  setBusy(false); input.focus();
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); const m = input.value; input.value = ""; input.style.height = ""; turn(m); });
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!busy) $("form").requestSubmit(); } });
+input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
+document.querySelectorAll(".suggest").forEach((b) => b.addEventListener("click", () => turn(b.textContent)));
+
+/* ---- the data connection: demo data or a linked dbt project ---- */
+let PROJECT = null;
+async function loadProject() {
+  PROJECT = await (await fetch("/api/project")).json();
+  const pill = $("projectPill");
+  pill.textContent = PROJECT.mode === "demo" ? "Demo data" : `${PROJECT.name} · ${PROJECT.models} models`;
+  pill.classList.toggle("demo", PROJECT.mode === "demo");
+  pill.classList.toggle("bad", !!PROJECT.error);
+  // The starter screen should speak about the connected data.
+  const empty = $("empty");
+  if (empty) {
+    const intro = empty.querySelector("p"), chips = [...empty.querySelectorAll(".suggest")];
+    if (PROJECT.error) {
+      intro.remove(); chips.forEach((c) => c.remove());
+      const box = document.createElement("div"); box.className = "problem";
+      box.textContent = `The dbt project isn't connected.\n${PROJECT.error}`;
+      empty.appendChild(box);
+    } else {
+      intro.textContent = PROJECT.mode === "demo"
+        ? "Describe a dashboard in plain words. It builds on the example sales data and appears right here."
+        : `Describe a dashboard in plain words. It builds on the ${PROJECT.models} models in ${PROJECT.name} and appears right here.`;
+      chips.forEach((c, i) => { const t = PROJECT.suggestions[i]; if (t) c.textContent = t; else c.remove(); });
+    }
+  }
+}
+function renderProject() {
+  const P = PROJECT, body = $("projectBody");
+  $("projectSub").textContent = P.mode === "demo" ? "Demo data" : P.name;
+  if (P.mode === "demo") {
+    body.innerHTML = `<p style="margin-top:0">You're exploring the built-in demo data. To build on your own warehouse, link a dbt project and restart:</p>
+      <p><code>dct-chat --dbt-project /path/to/your/dbt/project</code></p>
+      <p style="color:var(--muted)">Optional: <code>--target prod</code> to pick a dbt target, <code>--profiles-dir DIR</code> if profiles.yml lives elsewhere. Boards are kept in their own folder and never written into your dbt project.</p>
+      <div class="actions"><button id="checkBtn">Test connection</button></div><div id="checkOut"></div>`;
+  } else {
+    const when = P.manifest_at ? new Date(P.manifest_at).toLocaleString() : "unknown";
+    body.innerHTML = `${P.error ? `<div class="result err" style="margin-bottom:12px">${esc(P.error)}</div>` : ""}
+      ${P.warning ? `<div class="result" style="margin-bottom:12px">${esc(P.warning)}</div>` : ""}
+      <dl class="kv"><dt>Project</dt><dd>${esc(P.name)}</dd><dt>Warehouse</dt><dd>${esc(P.adapter || "unknown")}</dd>
+        <dt>Profile / target</dt><dd>${esc(P.profile || "")} / ${esc(P.target)}</dd>
+        <dt>Contents</dt><dd>${P.models} models · ${P.sources} sources · ${P.metrics} metrics</dd>
+        <dt>Manifest built</dt><dd>${esc(when)}</dd></dl>
+      <div class="actions"><button id="refreshBtn">Refresh models</button><button id="checkBtn">Test connection</button></div><div id="checkOut"></div>
+      <p style="color:var(--muted);font-size:13px">Refresh re-reads your dbt project (runs <code>dbt parse</code>). A chat already in progress keeps the models it started with, so start a new chat to use changes.</p>`;
+  }
+  $("checkBtn").addEventListener("click", async (e) => {
+    const btn = e.currentTarget, out = $("checkOut"); btn.disabled = true; out.className = "result"; out.textContent = "Connecting…";
+    const r = await (await fetch("/api/project/check", { method: "POST" })).json();
+    out.className = "result " + (r.ok ? "ok" : "err"); out.textContent = r.detail; btn.disabled = false;
+  });
+  $("refreshBtn")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Refreshing…";
+    PROJECT = await (await fetch("/api/project/refresh", { method: "POST" })).json();
+    await loadProject(); renderProject(); toast("Project refreshed. Start a new chat to use the changes.");
+  });
+}
+$("projectPill").addEventListener("click", () => { if (!PROJECT) return; renderProject(); $("projectModal").showModal(); });
+$("projectClose").addEventListener("click", () => $("projectModal").close());
+$("projectModal").addEventListener("click", (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+loadProject();
+
+/* ---- boards sidebar ---- */
+const app = $("app");
+function setSidebar(open) {
+  app.classList.toggle("closed", !open);
+  try { localStorage.setItem("dct-sidebar", open ? "open" : "closed"); } catch {}
+}
+{
+  let saved = null; try { saved = localStorage.getItem("dct-sidebar"); } catch {}
+  setSidebar(saved ? saved === "open" : innerWidth > 900);
+}
+$("sideToggle").addEventListener("click", () => setSidebar(app.classList.contains("closed")));
+$("sideClose").addEventListener("click", () => setSidebar(false));
+
+function markOpenBoards() {
+  const open = new Set([...stream.querySelectorAll(".card[data-slug]")].map((c) => c.dataset.slug));
+  document.querySelectorAll(".bitem").forEach((el) => {
+    el.querySelector(".dot")?.remove();
+    if (open.has(el.dataset.slug)) { const d = document.createElement("span"); d.className = "dot"; d.title = "In this conversation"; el.appendChild(d); }
+  });
+}
+function openBoard(slug, item) {
+  const existing = stream.querySelector(`.card[data-slug="${slug}"]`);
+  $("empty")?.remove();
+  const card = existing || stream.appendChild(boardCard(slug));
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+  item?.classList.remove("flash"); void item?.offsetWidth; item?.classList.add("flash");
+  markOpenBoards();
+  if (innerWidth <= 900) setSidebar(false);
+}
+async function loadSidebar() {
+  const r = await (await fetch("/api/boards")).json();
+  BASE = r.base;
+  const list = $("boardList");
+  $("boardCount").textContent = r.boards.length ? `· ${r.boards.length}` : "";
+  list.innerHTML = r.boards.length ? "" : '<div class="side-empty">Boards you build will show up here.</div>';
+  const old = (await (await fetch("/api/legacy")).json()).count;
+  if (old) {
+    const note = document.createElement("div");
+    note.className = "adopt";
+    note.innerHTML = `${old} ${old === 1 ? "board" : "boards"} from before sessions existed.<button>Adopt ${old === 1 ? "it" : "them"} into this browser</button>`;
+    note.querySelector("button").addEventListener("click", async () => { await fetch("/api/legacy/adopt", { method: "POST" }); loadSidebar(); });
+    list.prepend(note);
+  }
+  r.boards.forEach((b) => {
+    const el = document.createElement("button");
+    el.className = "bitem"; el.dataset.slug = b.slug;
+    el.innerHTML = `<span class="thumb"><img alt="" loading="lazy"></span><span class="txt"><span class="t"></span><span class="s"></span></span>`;
+    el.querySelector(".t").textContent = b.title;
+    el.querySelector(".s").textContent = b.slug;
+    const img = el.querySelector("img"), box = el.querySelector(".thumb");
+    img.addEventListener("load", () => box.classList.add("ready"));
+    img.addEventListener("error", () => { img.remove(); box.classList.add("ready"); });
+    img.src = `/api/thumb/${b.slug}?v=${b.mtime}`;   // the URL changes when the board does
+    el.addEventListener("click", () => openBoard(b.slug, el));
+    list.appendChild(el);
+  });
+  markOpenBoards();
+}
+loadSidebar();
+
+async function resetChat(model) {
+  await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model }) });
+  location.reload();
+}
+$("reset").addEventListener("click", () => resetChat($("model").value));
+$("model").addEventListener("change", () => { if (!busy) resetChat($("model").value); });
+(async () => {
+  const r = await (await fetch("/api/models")).json();
+  Object.entries(r.models).forEach(([k, v]) => $("model").add(new Option(v, k)));
+  $("model").value = r.current;
+})();
+</script>
+
+</body>
+</html>

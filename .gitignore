@@ -1,0 +1,19 @@
+# environments and caches
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# your boards and conversations are yours, not the repo's
+workspace/charts/*
+!workspace/charts/.gitkeep
+workspace/.thumbs/
+workspace/.claude/
+workspace/.agents/
+workspace/renders/
+workspace/.legacy_*
+# a workspace per linked dbt project: boards built from your own data never get committed
+workspaces/
+
+# local scratch (e.g. a backup of a larger demo database)
+.local/

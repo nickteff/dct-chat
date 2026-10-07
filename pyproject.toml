@@ -1,0 +1,24 @@
+[project]
+name = "dct-chat"
+version = "0.1.0"
+description = "Chat with Claude to build dbt charts dashboards"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "claude-agent-sdk",
+  "fastapi",
+  "uvicorn",
+  "dbt-charts>=0.9.1",
+  "pillow",
+  "pyyaml",
+]
+
+[project.scripts]
+dct-chat = "dct_chat.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dct_chat"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

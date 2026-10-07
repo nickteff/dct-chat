@@ -78,13 +78,15 @@ def stop_tree(proc: subprocess.Popen[bytes]) -> None:
     psutil.wait_procs(victims, timeout=10)
 
 
-def board_servers(port: int) -> list[psutil.Process]:
-    found = []
-    for p in psutil.process_iter(["cmdline"]):
+def board_servers(port: int) -> list[int]:
+    """PIDs of the board servers on a port, one per server. On Windows a server is a launcher plus
+    a Python child with the same command line, so keep only the top of each such pair."""
+    matched = {}
+    for p in psutil.process_iter(["cmdline", "ppid"]):
         cmd = p.info["cmdline"] or []
         if "serve" in cmd and "--port" in cmd and cmd[cmd.index("--port") + 1 : cmd.index("--port") + 2] == [str(port)]:
-            found.append(p)
-    return found
+            matched[p.pid] = p.info["ppid"]
+    return sorted(pid for pid, parent in matched.items() if parent not in matched)
 
 
 def demo_workspace(tmp: Path) -> Path:
@@ -138,12 +140,15 @@ def demo_tests(tmp: Path) -> None:
         stop_one = psutil.Process(app.pid)
         stop_one.kill()
         stop_one.wait(10)
-        check("(setup) board server outlives a crashed app", len(board_servers(port + 1)) == 1)
+        orphans = board_servers(port + 1)
+        check("(setup) board server outlives a crashed app", len(orphans) == 1, orphans)
         app = start_app(port, ws, log=log)
-        check("restart replaces the stale board server", len(board_servers(port + 1)) == 1, [p.pid for p in board_servers(port + 1)])
+        now = board_servers(port + 1)
+        check("restart replaces the stale board server with exactly one new one", len(now) == 1 and now[0] not in orphans, {"before": orphans, "after": now})
         check("boards still render after the restart", httpx.Client(base_url=f"http://127.0.0.1:{port}", cookies={"dct_sid": sid}, timeout=180).get(f"/{sid}/smoke/").status_code == 200)
     finally:
         stop_tree(app)
+    check("nothing left running after the app stops", board_servers(port + 1) == [], board_servers(port + 1))
 
 
 def dbt_tests(tmp: Path) -> None:

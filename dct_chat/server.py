@@ -405,6 +405,26 @@ _preview: subprocess.Popen[bytes] | None = None
 _upstream = httpx.AsyncClient(base_url=f"http://127.0.0.1:{PREVIEW_PORT}", timeout=None)
 
 
+def _stop_tree(procs: list[psutil.Process]) -> None:
+    """Terminate processes and everything they started.
+
+    A Windows console script (`dct.exe`) is a small launcher that runs Python as a child, so
+    stopping only the launcher leaves the server running.
+    """
+    victims = list(procs)
+    for proc in procs:
+        try:
+            victims += proc.children(recursive=True)
+        except psutil.Error:
+            pass
+    for proc in victims:
+        try:
+            proc.terminate()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(victims, timeout=5)
+
+
 def _clear_stale_preview() -> None:
     """Stop a board server left over from an earlier run of this app on our port.
 
@@ -417,12 +437,7 @@ def _clear_stale_preview() -> None:
         if "serve" in cmd and "--port" in cmd and str(WORKSPACE) in cmd:
             if cmd[cmd.index("--port") + 1 : cmd.index("--port") + 2] == [str(PREVIEW_PORT)]:
                 stale.append(proc)
-    for proc in stale:
-        try:
-            proc.terminate()
-        except psutil.Error:
-            pass
-    psutil.wait_procs(stale, timeout=5)
+    _stop_tree(stale)
 
 
 async def _ensure_preview() -> None:
@@ -479,7 +494,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             if sess.client is not None:
                 await sess.client.disconnect()
         if _preview is not None:
-            _preview.terminate()
+            try:
+                _stop_tree([psutil.Process(_preview.pid)])
+            except psutil.Error:
+                pass
         await _upstream.aclose()
 
 

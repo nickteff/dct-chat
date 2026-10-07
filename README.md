@@ -20,7 +20,8 @@ You need:
 - **Git**, to clone the repo.
 - **Claude access**, either way works:
   - **Claude Code, logged in.** Install it from [claude.com/claude-code](https://claude.com/claude-code), run `claude` once, and sign in with your Claude account. dct-chat uses that login.
-  - **Or an API key.** macOS / Linux: `export ANTHROPIC_API_KEY=sk-ant-...`. Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
+  - **Or an API key** from the [Anthropic Console](https://console.anthropic.com/), which is billed separately by usage. A Claude Pro, Max or Team subscription does *not* include an API key, so if that's what you have, use the Claude Code login above.
+  - **Setting the key:** macOS / Linux: `export ANTHROPIC_API_KEY=sk-ant-...`. Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
 
 ```bash
 git clone https://github.com/nickteff/dct-chat.git

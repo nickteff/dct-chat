@@ -17,3 +17,9 @@ workspaces/
 
 # local scratch (e.g. a backup of a larger demo database)
 .local/
+
+# what dbt builds when someone runs it in the demo dbt project (the project itself is tracked)
+tests/fixtures/mini_dbt/mini.duckdb
+tests/fixtures/mini_dbt/target/
+tests/fixtures/mini_dbt/logs/
+tests/fixtures/mini_dbt/dbt_packages/

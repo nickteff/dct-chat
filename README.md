@@ -72,6 +72,18 @@ What happens:
 - The header pill shows the connected project. Click it to **Refresh models** or **Test connection**.
 - Boards are saved in their own folder here (`workspaces/<project>/`), never in your dbt project.
 
+No dbt project handy? The repo includes a tiny one (a few models of made-up sales data on DuckDB) to try this with:
+
+```bash
+cd tests/fixtures/mini_dbt
+uv run dbt seed --profiles-dir .
+uv run dbt run --profiles-dir .
+cd ../..
+uv run dct-chat --dbt-project tests/fixtures/mini_dbt
+```
+
+(dbt writes a database and `target/`/`logs/` into that folder. They're git-ignored, so nothing gets committed.)
+
 Your warehouse's dbt adapter has to be installed. DuckDB is included. For others:
 
 ```bash

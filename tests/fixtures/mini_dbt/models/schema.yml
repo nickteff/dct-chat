@@ -1,0 +1,9 @@
+version: 2
+models:
+  - name: orders_by_region
+    description: Revenue and units per sales region.
+    columns:
+      - name: region
+        description: Sales region.
+      - name: revenue
+        description: Total revenue in dollars.

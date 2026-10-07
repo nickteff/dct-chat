@@ -13,7 +13,7 @@ uv run python scripts/build_demo_db.py           # regenerate the demo database
 
 Two processes run: this app on 8800, and `dct serve` (the board server) on 8801, started and watched by the app. To test a change without touching a running copy, start another on other ports (`--port 8820 --preview-port 8821`, and `--workspace DIR` for separate boards).
 
-There are no automated tests. Changes have been checked by driving the real UI with Playwright and by calling the API with `httpx` and two cookie jars. If you add tests, isolation (below) is the first thing to cover.
+`uv run python scripts/smoke_test.py` runs everything except a live Claude turn (sessions and isolation, boards, details, exports, a linked dbt project, stale-server cleanup, the agent's path guards) and needs no credentials. GitHub Actions runs it on Linux, macOS and Windows. A live agent turn has only been checked by hand, by driving the UI with Playwright.
 
 ## Layout
 
@@ -40,7 +40,8 @@ There are no automated tests. Changes have been checked by driving the real UI w
 
 ## Gotchas
 
-- Stopping the app: kill by port (`kill $(lsof -ti tcp:8800 -sTCP:LISTEN)`), not `pkill -f dct-chat`, which also hits other copies. After a hard kill the old board server can linger; the app clears a stale one on its port at startup.
+- Stopping the app: kill by port (`kill $(lsof -ti tcp:8800 -sTCP:LISTEN)` on macOS/Linux), not `pkill -f dct-chat`, which also hits other copies. After a hard kill the old board server can linger; the app clears a stale one on its port at startup.
+- Cross-platform rules: find tools with `runtime.tool()` (`.exe` on Windows), build child environments with `runtime.child_env()`, and always pass `encoding="utf-8"` to file reads and writes (Windows defaults to cp1252). The smoke test deliberately starts the app *without* a UTF-8 override so these slips get caught.
 - `uv run` re-syncs the environment first. If `pyproject.toml` changed it can swap installed packages under a running app.
 - macOS `sed -i` needs an argument (`sed -i ''`); GNU `sed` doesn't.
 - `dct doctor` reports the adapter as unconfigured when a project is linked with `dbt_project_dir:`, even though queries work. The connection test runs a real `SELECT 1` through `dct query` instead.
@@ -48,4 +49,4 @@ There are no automated tests. Changes have been checked by driving the real UI w
 
 ## Ideas not built yet
 
-Paste a screenshot to rebuild a dashboard (dct ships a `board-replicate` skill), a theme picker, undo and version history for boards, "ask about this data point", per-user warehouse credentials, delete/rename boards, an automated test suite.
+Paste a screenshot to rebuild a dashboard (dct ships a `board-replicate` skill), a theme picker, undo and version history for boards, "ask about this data point", per-user warehouse credentials, delete/rename boards, a test for a live agent turn.

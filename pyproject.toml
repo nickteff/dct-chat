@@ -10,6 +10,7 @@ dependencies = [
   "uvicorn",
   "dbt-charts>=0.9.1",
   "pillow",
+  "psutil",
   "pyyaml",
 ]
 

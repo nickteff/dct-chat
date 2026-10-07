@@ -13,11 +13,14 @@ warnings, and hands you the result.
 
 You need:
 
-- **macOS or Linux.** On Windows, use WSL.
-- **Python 3.11 to 3.13** and **[uv](https://docs.astral.sh/uv/)** (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+- **macOS, Linux or Windows 10/11.** Windows works natively, no WSL needed (see the Windows notes below).
+- **[uv](https://docs.astral.sh/uv/)**, which installs Python for you:
+  - macOS / Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - Windows (PowerShell): `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- **Git**, to clone the repo.
 - **Claude access**, either way works:
   - **Claude Code, logged in.** Install it from [claude.com/claude-code](https://claude.com/claude-code), run `claude` once, and sign in with your Claude account. dct-chat uses that login.
-  - **Or an API key:** `export ANTHROPIC_API_KEY=sk-ant-...`
+  - **Or an API key.** macOS / Linux: `export ANTHROPIC_API_KEY=sk-ant-...`. Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
 
 ```bash
 git clone https://github.com/nickteff/dct-chat.git
@@ -31,6 +34,12 @@ dataset (600 orders, signups, support tickets), so there's nothing else to set u
 
 > Using a Claude subscription login is fine for running this on your own machine. If you plan to
 > put it in front of other people, use an API key and check your plan's terms.
+
+### Windows notes
+
+- Run the commands above in **PowerShell**. Nothing needs WSL.
+- **Install Git for Windows.** Claude Code uses its bash on Windows, and the agent runs its commands through it. Claude Code's own setup page lists the current Windows requirements.
+- Everything except Claude's own step (the web app, boards, charts, exports, dbt linking, the safety checks) is tested automatically on Windows, macOS and Linux (`scripts/smoke_test.py`, run by GitHub Actions). The step where Claude runs commands on Windows depends on Claude Code itself.
 
 ## Things to try
 
@@ -100,11 +109,13 @@ Flags on `dct-chat`, or environment variables:
 ## Troubleshooting
 
 - **"Not logged in" or an authentication error.** Run `claude` once and sign in, or set `ANTHROPIC_API_KEY`.
+- **Windows: the agent can't run commands.** Install Git for Windows, then restart your terminal.
 - **Port already in use.** `uv run dct-chat --port 8900 --preview-port 8901`.
 - **"dbt parse failed".** The panel shows dbt's own message. Usually a profile name or target that doesn't match.
 - **A board shows an error.** Open **Details**, or just tell Claude what you see.
 
 ## Status
 
-A working prototype. There are no automated tests yet, and the data connection is shared by every
+A working prototype. The smoke test (`uv run python scripts/smoke_test.py`) covers everything except a live
+Claude turn; the agent itself is not under automated test. The data connection is shared by every
 session. See `CLAUDE.md` if you want to work on the code with Claude.

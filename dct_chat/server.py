@@ -19,9 +19,7 @@ import os
 import re
 import secrets
 import shutil
-import signal
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -34,6 +32,7 @@ from typing import Any
 
 import duckdb
 import httpx
+import psutil
 import uvicorn
 from claude_agent_sdk import (
     AssistantMessage,
@@ -52,6 +51,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from dct_chat import project as dbt
+from dct_chat.runtime import child_env, tool
 
 ROOT = Path(__file__).resolve().parent.parent
 # Link a real dbt project with DCT_CHAT_DBT_PROJECT (or `dct-chat --dbt-project`). Boards then
@@ -66,7 +66,6 @@ WORKSPACE = Path(os.environ.get("DCT_CHAT_WORKSPACE", _default_workspace)).resol
 CHARTS = WORKSPACE / "charts"
 THUMBS = WORKSPACE / ".thumbs"
 STATIC = Path(__file__).resolve().parent / "static"
-VENV_BIN = Path(sys.executable).parent
 
 APP_PORT = int(os.environ.get("DCT_CHAT_PORT", "8800"))
 PREVIEW_PORT = int(os.environ.get("DCT_CHAT_PREVIEW_PORT", "8801"))
@@ -150,10 +149,12 @@ def _schema_summary() -> str:
 
 def _cheatsheet() -> str:
     out = subprocess.run(
-        [str(VENV_BIN / "dct"), "docs", "cheatsheet"],
+        [tool("dct"), "docs", "cheatsheet"],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=WORKSPACE,
+        env=child_env(),
         check=False,
     )
     return out.stdout.strip()
@@ -182,7 +183,14 @@ ALLOWED_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash(dct:*)"]
 
 # `dct` runs outside the agent's file permissions, so keep its commands inside the
 # session's own folder: no parent-directory hops, no absolute paths, no ~.
-_ESCAPES_FOLDER = re.compile(r"(^|[\s'\"=])\.\.(/|$)|~|\s/(?!dev/null)[\w.~-]|\$\(|`")
+_ESCAPES_FOLDER = re.compile(
+    r"(^|[\s'\"=])\.\.([\\/]|$)"  # a `..` hop, with either slash
+    r"|~"  # the home directory
+    r"|\s/(?!dev/null)[\w.~-]"  # a POSIX absolute path
+    r"|(^|[\s'\"=])[A-Za-z]:[\\/]"  # a Windows drive path (C:\ or C:/)
+    r"|(^|[\s'\"=])\\\\"  # a UNC path (\\server\share)
+    r"|\$\(|`"  # command substitution
+)
 
 
 async def _guard_bash(input_data: Any, tool_use_id: str | None, context: Any) -> dict[str, Any]:
@@ -342,7 +350,6 @@ def _session(request: Request) -> Session:
 
 
 def _options(sess: Session, resume: bool) -> ClaudeAgentOptions:
-    env = {**os.environ, "PATH": f"{VENV_BIN}{os.pathsep}{os.environ['PATH']}"}
     sess.dir.mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
         cwd=str(sess.dir),  # the agent sees only this session's boards
@@ -355,7 +362,7 @@ def _options(sess: Session, resume: bool) -> ClaudeAgentOptions:
                 HookMatcher(matcher="Read|Write|Edit|Glob|Grep|NotebookEdit", hooks=[_guard_paths(sess.dir)]),
             ]
         },
-        env=env,
+        env=child_env(),
         model=sess.model,
         effort=EFFORT,  # type: ignore[arg-type]
         include_partial_messages=True,
@@ -401,21 +408,21 @@ _upstream = httpx.AsyncClient(base_url=f"http://127.0.0.1:{PREVIEW_PORT}", timeo
 def _clear_stale_preview() -> None:
     """Stop a board server left over from an earlier run of this app on our port.
 
-    Only a process whose command line names this workspace is touched; anything
+    Only a process that is `... serve --port <ours>` for this workspace is touched; anything
     else holding the port is left alone and surfaces as a startup error.
     """
-    pids = subprocess.run(
-        ["lsof", "-ti", f"tcp:{PREVIEW_PORT}", "-sTCP:LISTEN"],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.split()
-    for pid in pids:
-        cmd = subprocess.run(
-            ["ps", "-p", pid, "-o", "command="], capture_output=True, text=True, check=False
-        ).stdout
-        if str(WORKSPACE) in cmd and "serve" in cmd:
-            os.kill(int(pid), signal.SIGTERM)
+    stale = []
+    for proc in psutil.process_iter(["cmdline"]):
+        cmd = proc.info["cmdline"] or []
+        if "serve" in cmd and "--port" in cmd and str(WORKSPACE) in cmd:
+            if cmd[cmd.index("--port") + 1 : cmd.index("--port") + 2] == [str(PREVIEW_PORT)]:
+                stale.append(proc)
+    for proc in stale:
+        try:
+            proc.terminate()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(stale, timeout=5)
 
 
 async def _ensure_preview() -> None:
@@ -427,7 +434,7 @@ async def _ensure_preview() -> None:
     await asyncio.sleep(0.5)
     _preview = subprocess.Popen(
         [
-            str(VENV_BIN / "dct"),
+            tool("dct"),
             "serve",
             "--port",
             str(PREVIEW_PORT),
@@ -436,6 +443,7 @@ async def _ensure_preview() -> None:
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=child_env(),
     )
     for _ in range(60):
         try:
@@ -540,7 +548,7 @@ def _board_file(sid: str, name: str) -> Path | None:
 
 def _board_title(path: Path) -> str:
     """The board's authored `title:` (top-level line), else a name made from its file."""
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("title:"):
             return line.split(":", 1)[1].strip().strip("\"'") or path.stem
     return path.stem.replace("_", " ").replace("-", " ")
@@ -744,18 +752,18 @@ async def _render(
     if board is None:
         return f"No board named {name!r}."
     args = [
-        str(VENV_BIN / "dct"), "render", str(board),
+        tool("dct"), "render", str(board),
         "--format", fmt, "-o", str(out), "--project-dir", str(WORKSPACE),
         "--allow-chart-errors",
     ]
     for key, value in params:
         args += ["--var", f"{key}={value}"]
     proc = await asyncio.create_subprocess_exec(
-        *args, cwd=WORKSPACE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *args, cwd=WORKSPACE, env=child_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0 or not out.exists():
-        return stderr.decode()[-400:] or "Render failed."
+        return stderr.decode(errors="replace")[-400:] or "Render failed."
     return None
 
 
@@ -768,7 +776,7 @@ async def info(slug: str, request: Request) -> JSONResponse:
         error = await _render(sess.sid, slug, "data", request.query_params.multi_items(), out)
         if error:
             return JSONResponse({"error": error}, status_code=422)
-        data = json.loads(out.read_text())
+        data = json.loads(out.read_text(encoding="utf-8"))
     queries = []
     for name, q in (data.get("queries") or {}).items():
         rows = q.get("rows") or []

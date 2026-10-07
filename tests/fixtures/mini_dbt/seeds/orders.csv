@@ -1,0 +1,11 @@
+order_id,region,product,revenue,units
+1,North,Widget A,120,4
+2,North,Widget B,80,2
+3,South,Widget A,60,2
+4,South,Gadget X,200,5
+5,East,Gadget X,150,3
+6,East,Widget B,90,3
+7,West,Widget A,110,4
+8,West,Gadget X,175,5
+9,North,Gadget X,130,4
+10,South,Widget B,70,2

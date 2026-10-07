@@ -1,5 +1,7 @@
 # dct-chat: notes for working on this code
 
+> **Working on slowness on a Windows machine? Read `HANDOFF.md` first.** It has the measurements, the plan (in-process tools instead of a `dct` process per command), what's already proven, and what to measure.
+
 A chat UI where Claude builds [dbt charts](https://github.com/dbt-labs/dbt-charts) dashboards. A browser talks to a FastAPI app; each browser has its own Claude Agent SDK session; boards are YAML files rendered by the `dct` CLI and shown inline in the chat.
 
 ## Run it

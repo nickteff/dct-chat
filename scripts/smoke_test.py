@@ -239,7 +239,11 @@ def tool_tests(tmp: Path) -> None:
     check("render_board tool: ok, with what each chart shows", out["render"][0] is False and "status: ok" in out["render"][1] and "4 rows" in out["render"][1], out["render"])
     check("render_board sees an edit made after the first render", "Second title" in out["render_after_edit"], out["render_after_edit"][:200])
     check("render_board refuses another session's board and a traversal", out["other_render"] is True and out["traversal_render"] is True)
-    check("run_query tool returns rows", out["query"][0] is False and '"n": 600' in out["query"][1], out["query"])
+    import duckdb
+
+    with duckdb.connect(str(ws / "data" / "examples.duckdb"), read_only=True) as con:
+        expected = con.execute("SELECT COUNT(*) FROM ecommerce_orders").fetchone()[0]
+    check("run_query tool returns the right row count", out["query"][0] is False and f'"n": {expected}' in out["query"][1], out["query"])
     check("run_query reports a bad query as an error", out["bad_query"] is True)
     check("docs tool returns chart documentation", "chart" in out["docs"].lower() and len(out["docs"]) > 100, out["docs"])
 

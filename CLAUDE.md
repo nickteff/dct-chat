@@ -10,7 +10,6 @@ A chat UI where Claude builds [dbt charts](https://github.com/dbt-labs/dbt-chart
 uv sync
 uv run dct-chat                                  # demo data, http://localhost:8800
 uv run dct-chat --dbt-project /path/to/dbt       # a real dbt project
-uv run python scripts/build_demo_db.py           # regenerate the demo database
 ```
 
 Two processes run: this app on 8800, and `dct serve` (the board server) on 8801, started and watched by the app. To test a change without touching a running copy, start another on other ports (`--port 8820 --preview-port 8821`, and `--workspace DIR` for separate boards).
@@ -25,7 +24,7 @@ Two processes run: this app on 8800, and `dct serve` (the board server) on 8801,
 - `dct_chat/project.py`: reads a dbt project, runs `dbt parse`, summarizes the manifest, reads columns from the warehouse.
 - `dct_chat/cli.py`: the `dct-chat` command. It sets environment variables *before* importing the server, which reads them at import.
 - `dct_chat/static/index.html`: the whole UI (HTML, CSS, JS), no build step.
-- `workspace/`: the demo project (`dbt_charts.yml` plus `data/examples.duckdb`). Boards are written to `workspace/charts/<session>/`, which is git-ignored. A linked dbt project gets `workspaces/<project>/` instead.
+- `workspace/`: the demo project (`dbt_charts.yml` plus `data/examples.duckdb`, the playground's sample data from dbt charts, Apache-2.0; see `THIRD_PARTY_NOTICES.md`). Boards are written to `workspace/charts/<session>/`, which is git-ignored. A linked dbt project gets `workspaces/<project>/` instead.
 
 ## How a turn works
 

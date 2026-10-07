@@ -34,8 +34,8 @@ The terminal prints progress as it starts. Open **http://localhost:8800** when y
 server follows a few seconds later and says "Board server ready". **The very first run is slow** (a minute or two):
 it installs about 800MB of packages and Python compiles them once. Later starts take a few seconds.
 
-Open **http://localhost:8800** and click one of the suggestions. It ships with a small synthetic
-dataset (600 orders, signups, support tickets), so there's nothing else to set up.
+Open **http://localhost:8800** and click one of the suggestions. It ships with sample data (made-up
+orders, company, product and support tables, about 12MB), so there's nothing else to set up.
 
 > Using a Claude subscription login is fine for running this on your own machine. If you plan to
 > put it in front of other people, use an API key and check your plan's terms.
@@ -110,7 +110,6 @@ browser ──► dct_chat/server.py (FastAPI) ──► Claude Agent SDK sessio
 - `dct_chat/engine.py` and `dct_chat/tools.py`: the chart engine, loaded once, and the agent's tools that call it directly. (Launching `dct` for each step costs seconds of start-up every time, which adds up to minutes on a slow machine.)
 - `dct_chat/project.py`: reads a dbt project and summarizes its manifest for the agent.
 - `dct_chat/static/index.html`: the whole UI, no build step.
-- `scripts/build_demo_db.py`: regenerates the demo database (`uv run python scripts/build_demo_db.py`).
 
 ## Settings
 
@@ -133,6 +132,11 @@ Flags on `dct-chat`, or environment variables:
 - **Port already in use.** `uv run dct-chat --port 8900 --preview-port 8901`.
 - **"dbt parse failed".** The panel shows dbt's own message. Usually a profile name or target that doesn't match.
 - **A board shows an error.** Open **Details**, or just tell Claude what you see.
+
+## Credits
+
+The sample data comes from the [dbt charts](https://github.com/dbt-labs/dbt-charts) playground and is used under
+the Apache License 2.0. See `THIRD_PARTY_NOTICES.md`.
 
 ## Status
 

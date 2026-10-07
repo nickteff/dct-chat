@@ -440,13 +440,12 @@ def _clear_stale_preview() -> None:
     _stop_tree(stale)
 
 
-async def _ensure_preview() -> None:
-    """Start the board server if it isn't running, and wait until it answers."""
+def _spawn_preview() -> None:
+    """Start the board server if it isn't running. Returns at once; see `_wait_preview`."""
     global _preview
     if _preview is not None and _preview.poll() is None:
         return
     _clear_stale_preview()
-    await asyncio.sleep(0.5)
     _preview = subprocess.Popen(
         [
             tool("dct"),
@@ -460,13 +459,40 @@ async def _ensure_preview() -> None:
         stderr=subprocess.DEVNULL,
         env=child_env(),
     )
-    for _ in range(60):
+
+
+async def _wait_preview(timeout: float = 120) -> None:
+    """Wait until the board server answers. Slow disks and virus scanners can make this take a while."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _preview is not None and _preview.poll() is not None:
+            raise RuntimeError("the board server stopped while starting")
         try:
             await _upstream.get("/")
             return
         except httpx.TransportError:
             await asyncio.sleep(0.25)
-    raise RuntimeError(f"board server did not start on port {PREVIEW_PORT}")
+    raise RuntimeError(f"board server did not answer on port {PREVIEW_PORT} within {timeout:.0f}s")
+
+
+async def _ensure_preview() -> None:
+    """Make sure the board server is running and answering (used when it has died mid-session)."""
+    _spawn_preview()
+    await _wait_preview()
+
+
+def _say(message: str) -> None:
+    """A line of start-up progress. Without these a slow start looks the same as a hung one."""
+    print(f"[dct-chat] {message}", flush=True)
+
+
+async def _finish_starting(began: float) -> None:
+    """Once the board server is up, announce it and do the optional warm-up work."""
+    await _wait_preview()
+    _say(f"Board server ready ({time.monotonic() - began:.0f}s).")
+    # Warm-up, deliberately after the server is up so it doesn't slow the start itself.
+    await asyncio.to_thread(_system_prompt)
+    await _prewarm_thumbs()
 
 
 async def _prewarm_thumbs() -> None:
@@ -479,10 +505,15 @@ async def _prewarm_thumbs() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    await _setup_project()
-    await _ensure_preview()
+    began = time.monotonic()
+    _spawn_preview()  # the board server loads in parallel with everything below
+    if DBT_PROJECT:
+        _say(f"Reading the dbt project ({Path(DBT_PROJECT).expanduser().name})...")
+        await _setup_project()
+        _say(f"dbt project: {_project.error or f'{_project.summary.models} models, {_project.summary.adapter}'}" if _project.summary or _project.error else "dbt project read.")
+    _say(f"Open http://localhost:{APP_PORT}   (the board server is still starting; give it a moment)")
     background = [
-        asyncio.create_task(_prewarm_thumbs()),
+        asyncio.create_task(_finish_starting(began)),
         asyncio.create_task(_reap_idle_sessions()),
     ]
     try:
@@ -906,7 +937,7 @@ async def board_proxy(path: str, request: Request) -> Any:
     target = f"/{path}" + (f"?{query}" if query else "")
     try:
         upstream = await _upstream.send(_upstream.build_request("GET", target), stream=True)
-    except httpx.ConnectError:
+    except httpx.ConnectError:  # still starting, or it died: make sure it's up, then try again
         await _ensure_preview()
         upstream = await _upstream.send(_upstream.build_request("GET", target), stream=True)
     return StreamingResponse(
@@ -918,6 +949,7 @@ async def board_proxy(path: str, request: Request) -> Any:
 
 
 def main() -> None:
+    _say("Starting up. The first start after installing can take a minute or two.")
     uvicorn.run(app, host="127.0.0.1", port=APP_PORT, log_level="warning")
 
 

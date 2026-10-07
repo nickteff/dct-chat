@@ -30,6 +30,10 @@ uv sync
 uv run dct-chat
 ```
 
+The terminal prints progress as it starts. Open **http://localhost:8800** when you see the "Open ..." line; the board
+server follows a few seconds later and says "Board server ready". **The very first run is slow** (a minute or two):
+it installs about 800MB of packages and Python compiles them once. Later starts take a few seconds.
+
 Open **http://localhost:8800** and click one of the suggestions. It ships with a small synthetic
 dataset (600 orders, signups, support tickets), so there's nothing else to set up.
 
@@ -110,6 +114,7 @@ Flags on `dct-chat`, or environment variables:
 ## Troubleshooting
 
 - **"Not logged in" or an authentication error.** Run `claude` once and sign in, or set `ANTHROPIC_API_KEY`.
+- **Windows: starting takes a long time every run, not just the first.** Antivirus real-time scanning can slow Python a lot. Watch the terminal: it shows where the time goes. If it's consistently slow, ask whoever manages your machine whether the project folder can be excluded from scanning.
 - **Windows: the agent can't run commands.** Install Git for Windows, then restart your terminal.
 - **Port already in use.** `uv run dct-chat --port 8900 --preview-port 8901`.
 - **"dbt parse failed".** The panel shows dbt's own message. Usually a profile name or target that doesn't match.

@@ -43,8 +43,8 @@ dataset (600 orders, signups, support tickets), so there's nothing else to set u
 ### Windows notes
 
 - Run the commands above in **PowerShell**. Nothing needs WSL.
-- **Install Git for Windows.** Claude Code uses its bash on Windows, and the agent runs its commands through it. Claude Code's own setup page lists the current Windows requirements.
-- Everything except Claude's own step (the web app, boards, charts, exports, dbt linking, the safety checks) is tested automatically on Windows, macOS and Linux (`scripts/smoke_test.py`, run by GitHub Actions). The step where Claude runs commands on Windows depends on Claude Code itself.
+- **Install Git for Windows.** Claude Code itself needs it on Windows (it's where its own shell runs). Claude Code's setup page lists the current Windows requirements. dct-chat's agent doesn't run shell commands for its work: it writes board files and uses built-in tools to render them and query your data.
+- Everything except Claude's own step (the web app, boards, charts, the agent's tools, exports, dbt linking, the safety checks) is tested automatically on Windows, macOS and Linux (`scripts/smoke_test.py`, run by GitHub Actions).
 
 ## Things to try
 
@@ -89,11 +89,13 @@ uv add "dbt-charts[snowflake]"   # or bigquery, redshift, postgresql, databricks
 
 ```
 browser ──► dct_chat/server.py (FastAPI) ──► Claude Agent SDK session (one per browser)
-              │                                   │ writes boards, runs `dct` commands
-              └──► `dct serve` (board server) ◄───┘
+              │          │                          │ writes board files, calls the tools below
+              │          └─ chart engine, loaded once ◄─ render_board, run_query, docs
+              └──► `dct serve` (board server, a separate process)
 ```
 
 - `dct_chat/server.py`: the app: sessions, the agent, board endpoints, the proxy.
+- `dct_chat/engine.py` and `dct_chat/tools.py`: the chart engine, loaded once, and the agent's tools that call it directly. (Launching `dct` for each step costs seconds of start-up every time, which adds up to minutes on a slow machine.)
 - `dct_chat/project.py`: reads a dbt project and summarizes its manifest for the agent.
 - `dct_chat/static/index.html`: the whole UI, no build step.
 - `scripts/build_demo_db.py`: regenerates the demo database (`uv run python scripts/build_demo_db.py`).
@@ -115,7 +117,7 @@ Flags on `dct-chat`, or environment variables:
 
 - **"Not logged in" or an authentication error.** Run `claude` once and sign in, or set `ANTHROPIC_API_KEY`.
 - **Windows: starting takes a long time every run, not just the first.** Antivirus real-time scanning can slow Python a lot. Watch the terminal: it shows where the time goes. If it's consistently slow, ask whoever manages your machine whether the project folder can be excluded from scanning.
-- **Windows: the agent can't run commands.** Install Git for Windows, then restart your terminal.
+- **Windows: Claude Code won't start.** Install Git for Windows, then restart your terminal.
 - **Port already in use.** `uv run dct-chat --port 8900 --preview-port 8901`.
 - **"dbt parse failed".** The panel shows dbt's own message. Usually a profile name or target that doesn't match.
 - **A board shows an error.** Open **Details**, or just tell Claude what you see.
@@ -123,5 +125,5 @@ Flags on `dct-chat`, or environment variables:
 ## Status
 
 A working prototype. The smoke test (`uv run python scripts/smoke_test.py`) covers everything except a live
-Claude turn; the agent itself is not under automated test. The data connection is shared by every
+Claude turn; the agent itself is not under automated test. `uv run python scripts/timing.py` times the building blocks on your machine. The data connection is shared by every
 session. See `CLAUDE.md` if you want to work on the code with Claude.

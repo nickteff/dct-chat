@@ -12,9 +12,10 @@ import asyncio
 import json
 import os
 import re
-import subprocess
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -236,27 +237,6 @@ def summarize(project: DbtProject, discovered: dict[str, list[str]] | None = Non
     )
 
 
-def check_connection(workspace: Path, source: str, timeout: int = 90) -> tuple[bool, str]:
-    """Run a trivial query through dct against the source; (ok, human-readable detail)."""
-    try:
-        out = subprocess.run(
-            [tool("dct"), "query", source, "SELECT 1 AS ok"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            env=child_env(),
-            cwd=workspace,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"No answer from the warehouse within {timeout}s."
-    text = _plain(out.stdout + out.stderr).strip()
-    if out.returncode == 0:
-        return True, "Connected: a test query ran successfully."
-    return False, "\n".join(text.splitlines()[-6:]) or "The test query failed."
-
-
 def _type_hint(value: object) -> str:
     if value is None:
         return ""
@@ -272,29 +252,15 @@ def _type_hint(value: object) -> str:
     return "text"
 
 
-async def discover_columns(workspace: Path, names: list[str], timeout: int = 60) -> dict[str, list[str]]:
+async def discover_columns(ask: Callable[[str], Awaitable[dict[str, Any]]], names: list[str]) -> dict[str, list[str]]:
     """Read column names (with a rough type from a sample row) for models the YAML doesn't describe.
 
+    `ask` runs one SQL query and returns the result as a dict (`columns`, `data`, `success`).
     Best effort: any model that can't be queried is simply left out.
     """
-    gate = asyncio.Semaphore(4)
 
     async def one(name: str) -> tuple[str, list[str]] | None:
-        sql = f"SELECT * FROM {{{{ ref('{name}') }}}} LIMIT 1"
-        async with gate:
-            proc = await asyncio.create_subprocess_exec(
-                tool("dct"), "query", SOURCE_NAME, sql, "--json",
-                cwd=workspace, env=child_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                return None
-        try:
-            result = json.loads(out)
-        except json.JSONDecodeError:
-            return None
+        result = await ask(f"SELECT * FROM {{{{ ref('{name}') }}}} LIMIT 1")
         if not result.get("success") or not result.get("columns"):
             return None
         sample = (result.get("data") or [{}])[0]

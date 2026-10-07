@@ -524,6 +524,11 @@ let PROJECT = null;
 async function loadProject() {
   PROJECT = await (await fetch("/api/project")).json();
   const pill = $("projectPill");
+  if (PROJECT.loading) {  // the dbt project is read in the background: show that, and look again shortly
+    pill.textContent = "Reading dbt project…"; pill.classList.remove("bad", "demo");
+    setTimeout(loadProject, 1500);
+    return;
+  }
   pill.textContent = PROJECT.mode === "demo" ? "Demo data" : `${PROJECT.name} · ${PROJECT.models} models`;
   pill.classList.toggle("demo", PROJECT.mode === "demo");
   pill.classList.toggle("bad", !!PROJECT.error);

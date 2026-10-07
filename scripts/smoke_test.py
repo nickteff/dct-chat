@@ -5,7 +5,7 @@ runs the same on macOS, Linux and Windows (it is what CI runs on all three).
 
 It starts the real app twice (demo data, then a linked dbt project), and checks: sessions and
 isolation, board rendering, details, thumbnails, exports, unicode, the dbt project link,
-connection checks, stale board-server cleanup, and the agent's path guards.
+connection checks, stale board-server cleanup, the agent's tools and file guards.
 """
 
 from __future__ import annotations
@@ -178,18 +178,80 @@ def dbt_tests(tmp: Path) -> None:
         stop_tree(app)
 
 
+TOOLS_CHECK = r"""
+import asyncio, json
+from dct_chat import server as S, tools
+from dct_chat.engine import Engine
+
+ws = S.WORKSPACE
+a, b = "a" * 16, "b" * 16
+for sid in (a, b):
+    (ws / "charts" / sid).mkdir(parents=True)
+board = (ws / "charts" / a / "mine.yml")
+board.write_text(open(ws / "template.yml", encoding="utf-8").read().replace("TITLE", "First title"), encoding="utf-8")
+
+out = {
+    "own": str(S._board_rel(a, "mine").as_posix()),
+    "own_with_extension": str(S._board_rel(a, "mine.yml").as_posix()),
+    "other_session": S._board_rel(b, "mine"),
+    "traversal": S._board_rel(b, "../" + a + "/mine"),
+    "absolute": S._board_rel(b, str(board.with_suffix(""))),
+}
+
+async def main():
+    engine = Engine(ws, None)
+    await engine.start()
+    mine = lambda name: S._board_rel(a, name)
+    theirs = lambda name: S._board_rel(b, name)
+    r = await tools.render_board(engine, mine, {"board": "mine"})
+    out["render"] = [r["is_error"], r["content"][0]["text"]]
+    board.write_text(board.read_text(encoding="utf-8").replace("First title", "Second title"), encoding="utf-8")
+    out["render_after_edit"] = (await tools.render_board(engine, mine, {"board": "mine"}))["content"][0]["text"]
+    out["other_render"] = (await tools.render_board(engine, theirs, {"board": "mine"}))["is_error"]
+    out["traversal_render"] = (await tools.render_board(engine, theirs, {"board": "../" + a + "/mine"}))["is_error"]
+    q = await tools.run_query(engine, "examples_db", {"sql": "SELECT COUNT(*) AS n FROM ecommerce_orders"})
+    out["query"] = [q["is_error"], q["content"][0]["text"]]
+    out["bad_query"] = (await tools.run_query(engine, "examples_db", {"sql": "SELECT * FROM no_such_table"}))["is_error"]
+    out["docs"] = (await tools.docs(engine, {"search": "bar chart"}))["content"][0]["text"][:200]
+
+asyncio.run(main())
+print("RESULT" + json.dumps(out, default=str))
+"""
+
+
+def tool_tests(tmp: Path) -> None:
+    print("\n== agent tools (in-process engine) ==")
+    import json
+
+    ws = demo_workspace(tmp / "tools")
+    (ws / "template.yml").write_text(BOARD.replace("Revenue – Smoke Test", "TITLE").format(source="examples_db", table="ecommerce_orders"), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}  # as a user runs it
+    env["DCT_CHAT_WORKSPACE"] = str(ws)
+    done = subprocess.run([sys.executable, "-c", TOOLS_CHECK], cwd=ROOT, env=env, capture_output=True, encoding="utf-8", errors="replace")
+    line = next((x for x in done.stdout.splitlines() if x.startswith("RESULT")), None)
+    check("(setup) tools script ran", line is not None, done.stderr[-600:] or done.stdout[-600:])
+    if line is None:
+        return
+    out = json.loads(line[len("RESULT"):])
+    own = out["own"]
+    check("a session resolves its own board, with or without .yml", own.startswith("charts/aaaaaaaaaaaaaaaa/mine") and out["own_with_extension"] == own, own)
+    check("another session's name, a ../ hop and an absolute path all resolve to nothing", out["other_session"] is None and out["traversal"] is None and out["absolute"] is None, out)
+    check("render_board tool: ok, with what each chart shows", out["render"][0] is False and "status: ok" in out["render"][1] and "4 rows" in out["render"][1], out["render"])
+    check("render_board sees an edit made after the first render", "Second title" in out["render_after_edit"], out["render_after_edit"][:200])
+    check("render_board refuses another session's board and a traversal", out["other_render"] is True and out["traversal_render"] is True)
+    check("run_query tool returns rows", out["query"][0] is False and '"n": 600' in out["query"][1], out["query"])
+    check("run_query reports a bad query as an error", out["bad_query"] is True)
+    check("docs tool returns chart documentation", "chart" in out["docs"].lower() and len(out["docs"]) > 100, out["docs"])
+
+
 def guard_tests() -> None:
     print("\n== agent guards ==")
-    from dct_chat.server import _ESCAPES_FOLDER as shell, _outside_folder as outside
+    from dct_chat.server import _outside_folder as outside
 
     folder = Path(tempfile.mkdtemp()) / "mine"
     folder.mkdir()
     check("file tools: own files allowed", not any(outside(folder, p) for p in ("a.yml", "sub/a.yml", "*.yml", "**/*.yml", str(folder / "a.yml"))))
     check("file tools: other places refused", all(outside(folder, p) for p in ("../x.yml", "../*/*.yml", "sub/../../x.yml", str(folder.parent / "other" / "x.yml"))))
-    block = ["dct render ../x.yml", "dct render ..\\x\\y.yml", "dct render C:\\Users\\a\\x.yml", "dct render C:/Users/a/x.yml", "dct render \\\\srv\\share\\x.yml", "dct render ~/x.yml", "dct render /etc/x", "dct render $(cat x)"]
-    allow = ["dct validate a.yml && dct render a.yml --format text", 'dct query s "SELECT a / b FROM t"', "dct render a.yml 2>/dev/null", 'dct query s "SELECT \'https://x.com/a\'"']
-    check("shell guard: escapes refused", all(shell.search(c) for c in block), [c for c in block if not shell.search(c)])
-    check("shell guard: normal commands allowed", not any(shell.search(c) for c in allow), [c for c in allow if shell.search(c)])
 
 
 if __name__ == "__main__":
@@ -198,6 +260,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
         tmp = Path(t)
         guard_tests()
+        tool_tests(tmp)
         demo_tests(tmp)
         dbt_tests(tmp)
     print(f"\n{'ALL PASSED' if not FAILS else str(len(FAILS)) + ' FAILED: ' + ', '.join(FAILS)}")

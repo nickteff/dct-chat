@@ -14,19 +14,18 @@ shared by all sessions.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
 import secrets
 import shutil
 import subprocess
-import tempfile
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -45,13 +44,15 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from dct_chat import project as dbt
+from dct_chat.engine import Engine, EngineError, format_render
 from dct_chat.runtime import child_env, tool
+from dct_chat.tools import build_server
 
 ROOT = Path(__file__).resolve().parent.parent
 # Link a real dbt project with DCT_CHAT_DBT_PROJECT (or `dct-chat --dbt-project`). Boards then
@@ -78,40 +79,40 @@ SID_RE = re.compile(r"[a-f0-9]{16}")
 SYSTEM_PROMPT = """\
 You build dbt charts dashboards for the user.
 
-- Start with `dct skills intro`, then follow the dct-board-build skill.
 - __DATA__
-- Your working directory is the user's private boards folder. Write each board to
-  `<name>.yml` right here (never in a subfolder or elsewhere). After every edit run
-  `dct validate <name>.yml && dct render <name>.yml --format text`
-  and fix every warning before you answer.
-- The finished board appears inline in this chat automatically once you are done.
-  Don't give URLs, don't start servers, and don't paste the whole YAML back. Reply
-  in two or three plain sentences: what the board shows and what you chose. If the
-  user asks to see it, tell them it is shown right here in the conversation.
+- Your working directory is the user's private boards folder. Write each board to `<name>.yml`
+  right here (never in a subfolder or elsewhere) with the Write tool, and change it with Edit.
+- After every write or edit, call `render_board` with the board's name. It validates the board,
+  runs its queries, and reports errors, what each chart shows, and warnings with their fixes, in
+  about a second. Fix everything it reports.
+- Use `run_query` to look at the data only when the schema below doesn't answer it (filter
+  values, date ranges). Use `docs` to look up a chart type or field you're unsure of.
+- Design: lead with the answer (a KPI row, or the main chart, first); one idea per chart; sort
+  bars by value; give money and percentages proper number formats; keep to about three to six
+  charts; add a filter only where it earns its place.
+- The finished board appears inline in this chat automatically once you are done. Don't give
+  URLs, don't paste the whole YAML back. Reply in two or three plain sentences: what the board
+  shows and what you chose. If the user asks to see it, tell them it is shown right here.
 - When asked to change a board, edit the existing file rather than starting over.
-- A message may begin with `[Context: board <name>, chart <id>]`: the user pointed
-  at that chart. Change only that chart unless they say otherwise.
+- A message may begin with `[Context: board <name>, chart <id>]`: the user pointed at that
+  chart. Change only that chart unless they say otherwise.
 - Don't narrate your steps. Write nothing until your final reply.
-- End your final reply with one line: `NEXT: <idea> | <idea> | <idea>`, three
-  short follow-up requests (under eight words each) the user might want next.
-- You are not done until `<name>.yml` exists and renders with no warnings.
-  Never answer with a plan or a question when the request can be built now;
-  choose sensible defaults and say what you chose.
-- Be quick: the schema and syntax cheatsheet are below, so skip exploring the
-  schema, read a skill at most once, and batch commands into one Bash call.
-  Query only for values you still need (distinct filter options, date ranges).
+- End your final reply with one line: `NEXT: <idea> | <idea> | <idea>`, three short follow-up
+  requests (under eight words each) the user might want next.
+- You are not done until `<name>.yml` exists and `render_board` reports no errors and no
+  warnings. Never answer with a plan or a question when the request can be built now; choose
+  sensible defaults and say what you chose.
+- Be quick: the schema and syntax cheatsheet are below, so don't re-explore. Make as few tool
+  calls as you can.
 """
 
-DEMO_DATA = (
-    "Data: the `examples_db` source (DuckDB). Explore it with\n"
-    "  `dct query examples_db \"SELECT ...\"` before writing any board."
-)
+DEMO_DATA = "Data: the `examples_db` source (DuckDB); its tables are listed below."
 DBT_DATA = (
     "Data: the `warehouse` source, a dbt project (`__NAME__`, adapter __ADAPTER__). Query the project's\n"
     "  models with `{{ ref('model') }}` and its sources with `{{ source('src', 'table') }}`; never\n"
     "  hard-code table names. Prefer marts (fct_/dim_) over staging models. Column lists below come\n"
-    "  from the project's YAML and can be incomplete, so before relying on a column check it with\n"
-    "  `dct query warehouse \"SELECT * FROM {{ ref('model') }} LIMIT 5\"`. Every board sets\n"
+    "  from the project's YAML and the warehouse and can be incomplete, so before relying on a column\n"
+    "  check it with `run_query` and `SELECT * FROM {{ ref('model') }} LIMIT 5`. Every board sets\n"
     "  `source: warehouse`."
 )
 DEMO_SUGGESTIONS = [
@@ -147,26 +148,22 @@ def _schema_summary() -> str:
     return "\n".join(f"- {t}({', '.join(cols)})" for t, cols in tables.items())
 
 
-def _cheatsheet() -> str:
-    out = subprocess.run(
-        [tool("dct"), "docs", "cheatsheet"],
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        cwd=WORKSPACE,
-        env=child_env(),
-        check=False,
-    )
-    return out.stdout.strip()
+# The chart engine, loaded once in this process. Agent tools, Details, exports and thumbnails all
+# use it, so none of them pays the multi-second start-up of launching `dct` afresh.
+ENGINE = Engine(WORKSPACE, Path(DBT_PROJECT).expanduser().resolve() if DBT_PROJECT else None)
+DEFAULT_SOURCE = dbt.SOURCE_NAME if DBT_PROJECT else "examples_db"
+
+_cheatsheet_text = ""  # the docs "cheatsheet" section, fetched once from the engine
 
 
-@lru_cache(maxsize=1)
-def _cheatsheet_cached() -> str:
-    return _cheatsheet()
-
-
-def _system_prompt() -> str:
+async def _system_prompt() -> str:
     """The agent's instructions, for the linked dbt project or the bundled demo data."""
+    global _cheatsheet_text
+    if not _cheatsheet_text:
+        try:
+            _cheatsheet_text = await ENGINE.docs("cheatsheet", None)
+        except EngineError:
+            pass
     if _project.summary is not None and _project.project is not None:
         data = DBT_DATA.replace("__NAME__", _project.project.name).replace("__ADAPTER__", _project.summary.adapter or "unknown")
         parts = [SYSTEM_PROMPT.replace("__DATA__", data), _project.summary.prompt_text]
@@ -174,36 +171,14 @@ def _system_prompt() -> str:
         parts = [SYSTEM_PROMPT.replace("__DATA__", DEMO_DATA)]
         if schema := _schema_summary():
             parts.append(f"Tables in `examples_db` (DuckDB, schema main):\n{schema}")
-    if sheet := _cheatsheet_cached():
-        parts.append(f"dbt charts syntax cheatsheet (from `dct docs cheatsheet`):\n{sheet}")
+    if _cheatsheet_text:
+        parts.append(f"dbt charts syntax cheatsheet:\n{_cheatsheet_text}")
     return "\n\n".join(parts)
 
 
-ALLOWED_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash(dct:*)"]
-
-# `dct` runs outside the agent's file permissions, so keep its commands inside the
-# session's own folder: no parent-directory hops, no absolute paths, no ~.
-_ESCAPES_FOLDER = re.compile(
-    r"(^|[\s'\"=])\.\.([\\/]|$)"  # a `..` hop, with either slash
-    r"|~"  # the home directory
-    r"|\s/(?!dev/null)[\w.~-]"  # a POSIX absolute path
-    r"|(^|[\s'\"=])[A-Za-z]:[\\/]"  # a Windows drive path (C:\ or C:/)
-    r"|(^|[\s'\"=])\\\\"  # a UNC path (\\server\share)
-    r"|\$\(|`"  # command substitution
-)
-
-
-async def _guard_bash(input_data: Any, tool_use_id: str | None, context: Any) -> dict[str, Any]:
-    command = str((input_data.get("tool_input") or {}).get("command", ""))
-    if _ESCAPES_FOLDER.search(command):
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "Stay inside your boards folder: use relative file names only.",
-            }
-        }
-    return {}
+# The agent gets file tools for its own folder and three engine tools. It has no shell.
+FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"]
+ENGINE_TOOLS = ["mcp__dct__render_board", "mcp__dct__run_query", "mcp__dct__docs"]
 
 
 # ---------------------------------------------------------------------------
@@ -217,38 +192,71 @@ class ProjectState:
     summary: dbt.Summary | None = None
     error: str | None = None
     warning: str | None = None
+    loading: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)  # set once the project is read, or failed
 
 
 _project = ProjectState()
 
 
-async def _setup_project(force: bool = False) -> None:
-    """Read the dbt project, make sure its manifest is current, and digest it for the agent.
-
-    Failures are recorded for the UI to show; they never stop the app from starting.
-    """
+def _prepare_project() -> None:
+    """Read the dbt project and write the scratch project's config. Quick, files only, and it must
+    happen before the engine opens (the engine reads that config for the project link)."""
     if not DBT_PROJECT:
         return
+    try:
+        project = dbt.load_project(DBT_PROJECT, DBT_TARGET, PROFILES_DIR)
+        _project.project = project
+        _project.warning = dbt.write_charts_config(WORKSPACE, project)
+    except dbt.ProjectError as exc:
+        _project.error = str(exc)
+
+
+async def _setup_project(force: bool = False) -> None:
+    """Make sure the dbt manifest is current and digest the project for the agent.
+
+    Runs in the background so the app answers at once. Failures are recorded for the UI to show;
+    they never stop the app from starting.
+    """
+    if not DBT_PROJECT:
+        _project.ready.set()
+        return
     async with _project.lock:
+        _project.loading = True
         _project.error = _project.warning = None
         try:
             project = dbt.load_project(DBT_PROJECT, DBT_TARGET, PROFILES_DIR)
             _project.project = project
             _project.warning = dbt.write_charts_config(WORKSPACE, project)
+            rebuilt = False
             if force or dbt.manifest_is_stale(project):
                 if problem := await dbt.parse(project):
                     if not project.manifest.is_file():
                         raise dbt.ProjectError(problem)
                     _project.warning = f"Using the previous manifest. {problem}"
+                else:
+                    rebuilt = True
             summary = dbt.summarize(project)
+            if rebuilt or force:
+                await ENGINE.refresh()  # pick up the new manifest
             if summary.undocumented:  # the YAML describes no columns: ask the warehouse, so the agent needn't
-                found = await dbt.discover_columns(WORKSPACE, summary.undocumented)
+
+                async def ask(sql: str) -> dict[str, object]:
+                    return await ENGINE.query(sql, dbt.SOURCE_NAME, 1)
+
+                try:
+                    found = await dbt.discover_columns(ask, summary.undocumented)
+                except EngineError:
+                    found = {}
                 if found:
                     summary = dbt.summarize(project, found)
             _project.summary = summary
         except dbt.ProjectError as exc:
             _project.error, _project.summary = str(exc), None
+        finally:
+            _project.loading = False
+            _project.ready.set()
 
 
 def _project_suggestions() -> list[str]:
@@ -271,6 +279,7 @@ def _project_status() -> dict[str, object]:
     project, summary = _project.project, _project.summary
     return {
         "mode": "dbt",
+        "loading": _project.loading or not _project.ready.is_set(),
         "name": project.name if project else Path(DBT_PROJECT).expanduser().name,
         "profile": project.profile if project else None,
         "target": DBT_TARGET or "profile default",
@@ -349,16 +358,23 @@ def _session(request: Request) -> Session:
     return sess
 
 
-def _options(sess: Session, resume: bool) -> ClaudeAgentOptions:
+def _board_rel(sid: str, name: str) -> Path | None:
+    """A board's path relative to the workspace (what the engine wants), only inside the session's folder."""
+    path = _board_file(sid, name.strip().removesuffix(".yml").removesuffix(".yaml"))
+    return path.relative_to(WORKSPACE) if path is not None else None
+
+
+def _options(sess: Session, resume: bool, prompt: str) -> ClaudeAgentOptions:
     sess.dir.mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
         cwd=str(sess.dir),  # the agent sees only this session's boards
-        system_prompt={"type": "preset", "preset": "claude_code", "append": _system_prompt()},
-        allowed_tools=ALLOWED_TOOLS,
+        system_prompt={"type": "preset", "preset": "claude_code", "append": prompt},
+        tools=FILE_TOOLS,  # the built-in tools it may use: no shell
+        mcp_servers={"dct": build_server(ENGINE, lambda name: _board_rel(sess.sid, name), DEFAULT_SOURCE)},
+        allowed_tools=[*FILE_TOOLS, *ENGINE_TOOLS],
         permission_mode="acceptEdits",
         hooks={
             "PreToolUse": [
-                HookMatcher(matcher="Bash", hooks=[_guard_bash]),
                 HookMatcher(matcher="Read|Write|Edit|Glob|Grep|NotebookEdit", hooks=[_guard_paths(sess.dir)]),
             ]
         },
@@ -377,7 +393,8 @@ async def _new_client(sess: Session, resume: bool = False) -> ClaudeSDKClient:
         sess.client = None
     if not resume:
         sess.sdk_id = None
-    client = ClaudeSDKClient(options=_options(sess, resume and sess.sdk_id is not None))
+    prompt = await _system_prompt()
+    client = ClaudeSDKClient(options=_options(sess, resume and sess.sdk_id is not None, prompt))
     await client.connect()
     sess.client = client
     return client
@@ -487,11 +504,20 @@ def _say(message: str) -> None:
 
 
 async def _finish_starting(began: float) -> None:
-    """Once the board server is up, announce it and do the optional warm-up work."""
+    """Narrate the slow parts as they finish, then do the optional warm-up."""
     await _wait_preview()
     _say(f"Board server ready ({time.monotonic() - began:.0f}s).")
-    # Warm-up, deliberately after the server is up so it doesn't slow the start itself.
-    await asyncio.to_thread(_system_prompt)
+    try:
+        await ENGINE.wait_ready()
+        _say(f"Chart engine ready ({ENGINE.started_in:.0f}s).")
+    except EngineError as exc:
+        _say(str(exc))
+        return
+    await _project.ready.wait()
+    if DBT_PROJECT:
+        _say(f"dbt project: {_project.error}" if _project.error else f"dbt project ready: {_project.summary.models} models on {_project.summary.adapter} ({time.monotonic() - began:.0f}s).")
+    # Warm-up, deliberately last so it can't slow the start itself.
+    await _system_prompt()
     await _prewarm_thumbs()
 
 
@@ -507,15 +533,14 @@ async def _prewarm_thumbs() -> None:
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     began = time.monotonic()
     _spawn_preview()  # the board server loads in parallel with everything below
-    if DBT_PROJECT:
-        _say(f"Reading the dbt project ({Path(DBT_PROJECT).expanduser().name})...")
-        await _setup_project()
-        _say(f"dbt project: {_project.error or f'{_project.summary.models} models, {_project.summary.adapter}'}" if _project.summary or _project.error else "dbt project read.")
-    _say(f"Open http://localhost:{APP_PORT}   (the board server is still starting; give it a moment)")
+    _prepare_project()  # quick, and must come before the engine opens
     background = [
+        asyncio.create_task(ENGINE.start()),  # importing the engine is the slow part on a slow machine
+        asyncio.create_task(_setup_project()),
         asyncio.create_task(_finish_starting(began)),
         asyncio.create_task(_reap_idle_sessions()),
     ]
+    _say(f"Open http://localhost:{APP_PORT}   (still loading the chart engine; give it a moment)")
     try:
         yield
     finally:
@@ -660,18 +685,14 @@ def _sse(event: str, data: dict[str, object]) -> str:
 
 
 def _tool_phase(block: ToolUseBlock) -> str:
-    """Coarse stage a tool call belongs to; the UI shows stages, never commands."""
-    args = block.input
+    """Coarse stage a tool call belongs to; the UI shows stages, never the tool calls."""
     if block.name in ("Write", "Edit"):
         return "write"
-    if block.name == "Bash":
-        command = str(args.get("command", ""))
-        if "dct validate" in command or "dct render" in command:
-            return "check"
-        if "dct skills" in command or "dct docs" in command:
-            return "learn"
-        return "explore"
-    return "explore"
+    if block.name == "mcp__dct__render_board":
+        return "check"
+    if block.name == "mcp__dct__docs":
+        return "learn"
+    return "explore"  # run_query, Read, Glob, Grep
 
 
 def _split_next(text: str) -> tuple[str, list[str]]:
@@ -687,6 +708,7 @@ def _split_next(text: str) -> tuple[str, list[str]]:
 
 
 async def _stream_turn(sess: Session, message: str) -> AsyncIterator[str]:
+    await _project.ready.wait()  # the dbt project is read in the background at start-up
     if DBT_PROJECT and _project.summary is None:
         yield _sse("error", {"message": f"The dbt project isn't connected. {_project.error or 'Open the project panel for details.'}"})
         return
@@ -779,10 +801,14 @@ async def project_refresh() -> dict[str, object]:
 
 @app.post("/api/project/check")
 async def project_check() -> dict[str, object]:
-    """Run a trivial query through dct to prove the warehouse connection works."""
-    source = dbt.SOURCE_NAME if DBT_PROJECT else "examples_db"
-    ok, detail = await asyncio.to_thread(dbt.check_connection, WORKSPACE, source)
-    return {"ok": ok, "detail": detail}
+    """Run a trivial query to prove the data connection works."""
+    try:
+        result = await asyncio.wait_for(ENGINE.query("SELECT 1 AS ok", DEFAULT_SOURCE, 1), 90)
+    except (EngineError, TimeoutError) as exc:
+        return {"ok": False, "detail": str(exc) or "No answer from the warehouse within 90s."}
+    if result.get("success"):
+        return {"ok": True, "detail": "Connected: a test query ran successfully."}
+    return {"ok": False, "detail": "\n".join(result.get("errors") or ["The test query failed."])[:600]}
 
 
 # ---------------------------------------------------------------------------
@@ -790,42 +816,36 @@ async def project_check() -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 
-async def _render(
-    sid: str, name: str, fmt: str, params: list[tuple[str, str]], out: Path
-) -> str | None:
-    """Run `dct render` for one of the session's boards, with query params as variables.
+def _variables(items: Any) -> dict[str, Any]:
+    """Board filter values from query parameters (a repeated parameter becomes a list)."""
+    grouped: dict[str, list[str]] = {}
+    for key, value in items:
+        grouped.setdefault(key, []).append(value)
+    return {k: v[0] if len(v) == 1 else v for k, v in grouped.items()}
 
-    Returns an error message, or None on success.
-    """
-    board = _board_file(sid, name)
-    if board is None:
-        return f"No board named {name!r}."
-    args = [
-        tool("dct"), "render", str(board),
-        "--format", fmt, "-o", str(out), "--project-dir", str(WORKSPACE),
-        "--allow-chart-errors",
-    ]
-    for key, value in params:
-        args += ["--var", f"{key}={value}"]
-    proc = await asyncio.create_subprocess_exec(
-        *args, cwd=WORKSPACE, env=child_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0 or not out.exists():
-        return stderr.decode(errors="replace")[-400:] or "Render failed."
-    return None
+
+async def _render(sid: str, name: str, fmt: str, variables: dict[str, Any] | None = None, **options: Any) -> tuple[Any, str | None]:
+    """Render one of the session's boards in this process. Returns (result, None) or (None, why not)."""
+    rel = _board_rel(sid, name)
+    if rel is None:
+        return None, f"No board named {name!r}."
+    try:
+        result = await ENGINE.render(rel, fmt, variables, **options)
+    except EngineError as exc:
+        return None, str(exc)
+    if result.status == "failed":
+        return None, format_render(result)
+    return result, None
 
 
 @app.get("/api/info/{slug:path}")
 async def info(slug: str, request: Request) -> JSONResponse:
     """What a board is built from: each query's SQL, row count and columns."""
     sess = _session(request)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "board.json"
-        error = await _render(sess.sid, slug, "data", request.query_params.multi_items(), out)
-        if error:
-            return JSONResponse({"error": error}, status_code=422)
-        data = json.loads(out.read_text(encoding="utf-8"))
+    result, error = await _render(sess.sid, slug, "data", _variables(request.query_params.multi_items()))
+    if error:
+        return JSONResponse({"error": error}, status_code=422)
+    data = result.data if isinstance(result.data, dict) else {}
     queries = []
     for name, q in (data.get("queries") or {}).items():
         rows = q.get("rows") or []
@@ -842,7 +862,7 @@ async def info(slug: str, request: Request) -> JSONResponse:
             "title": data.get("title"),
             "queries": queries,
             "charts": len(data.get("charts") or {}),
-            "warnings": data.get("warnings") or [],
+            "warnings": [w.message for w in (result.warnings or [])],
             "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
     )
@@ -866,17 +886,15 @@ async def _thumb(sid: str, name: str) -> tuple[Path | None, str | None]:
     async with _thumb_locks.setdefault((sid, name), asyncio.Lock()):
         if not path.exists():
             folder.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory() as tmp:
-                big = Path(tmp) / "board.png"
-                async with _thumb_gate:
-                    error = await _render(sid, name, "png", [], big)
-                if error:
-                    return None, error
-                for old in folder.glob(f"{stem}-*.png"):
-                    old.unlink(missing_ok=True)
-                with Image.open(big) as img:
-                    height = round(img.height * THUMB_WIDTH / img.width)
-                    img.convert("RGB").resize((THUMB_WIDTH, height), Image.LANCZOS).save(path, optimize=True)
+            async with _thumb_gate:
+                result, error = await _render(sid, name, "png", None, scale=1.0)
+            if error:
+                return None, error
+            for old in folder.glob(f"{stem}-*.png"):
+                old.unlink(missing_ok=True)
+            with Image.open(io.BytesIO(result.data)) as img:
+                height = round(img.height * THUMB_WIDTH / img.width)
+                img.convert("RGB").resize((THUMB_WIDTH, height), Image.LANCZOS).save(path, optimize=True)
     return path, None
 
 
@@ -889,26 +907,27 @@ async def thumb(slug: str, request: Request) -> FileResponse | JSONResponse:
     return FileResponse(path, headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
-EXPORT_FORMATS = {"png", "pdf", "html", "svg"}
+# format -> (content type, render options)
+EXPORTS: dict[str, tuple[str, dict[str, Any]]] = {
+    "png": ("image/png", {"scale": 2.0}),
+    "pdf": ("application/pdf", {}),
+    "html": ("text/html; charset=utf-8", {"standalone": True}),
+    "svg": ("image/svg+xml", {}),
+}
 
 
 @app.get("/api/export/{fmt}/{slug:path}", response_model=None)
-async def export(fmt: str, slug: str, request: Request) -> FileResponse | JSONResponse:
+async def export(fmt: str, slug: str, request: Request) -> Response:
     """Render a board (with the current filters) to a downloadable file."""
-    if fmt not in EXPORT_FORMATS:
+    if fmt not in EXPORTS:
         return JSONResponse({"error": f"Unsupported format {fmt!r}."}, status_code=400)
     sess = _session(request)
-    tmp = Path(tempfile.mkdtemp())
-    out = tmp / f"{Path(slug).name}.{fmt}"
-    error = await _render(sess.sid, slug, fmt, request.query_params.multi_items(), out)
+    media_type, options = EXPORTS[fmt]
+    result, error = await _render(sess.sid, slug, fmt, _variables(request.query_params.multi_items()), **options)
     if error:
-        shutil.rmtree(tmp, ignore_errors=True)
         return JSONResponse({"error": error}, status_code=422)
-    return FileResponse(
-        out,
-        filename=out.name,
-        background=BackgroundTask(shutil.rmtree, tmp, ignore_errors=True),
-    )
+    body = result.data if isinstance(result.data, bytes) else str(result.data).encode("utf-8")
+    return Response(body, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{Path(slug).name}.{fmt}"'})
 
 
 # ---------------------------------------------------------------------------

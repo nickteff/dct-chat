@@ -96,7 +96,24 @@ loading, the model, the board server, Claude Code starting) before changing code
 ## Measurements from the Windows machine (fill this in)
 
 ```
-(paste the output of: uv run python scripts/timing.py)
+Before the in-process engine (uv run python scripts/timing.py, win32, python 3.13.9):
+   0.3s  start Python and exit
+   3.5s  dct --version
+   8.8s  dct docs cheatsheet
+   4.4s  dct skills board-build
+  12.2s  dct query (one small SQL query)
+  16.8s  dct validate board.yml
+  16.7s  dct render board.yml --format text  (first time; 18.5s again)
+   3.0s  Claude Code engine: start and print its version
+  bash on PATH: yes. A typical build was about 8 dct commands, roughly 115s before the model's own time.
 
-(then: the terminal's start-up lines, and the time of one real build)
+After (commit ea9377b), start-up lines:
+  [dct-chat] Board server ready (11s).     (was 36s)
+  [dct-chat] Chart engine ready (7s).
+
+After (commit ea9377b), one real build, "Monthly revenue trend, with revenue by category and a region filter",
+sent to /api/chat on a fresh session: 31s to the final `done` event (first phase event at 15s, board at 31s).
 ```
+
+The first ~15s before any progress is Claude Code starting (about 3s for its version alone here) plus the first model
+response; it is not the engine. The board server (11s) is now the largest fixed start-up cost left.
